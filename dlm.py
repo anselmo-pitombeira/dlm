@@ -6,6 +6,7 @@ Created on Sat Sep 19 16:11:47 2015
 """
 
 import numpy as np
+from scipy.stats import norm     ##Distribuição normal
 
 def first_order_constant(Y, m0, C0, W, V, d = None):
     
@@ -349,6 +350,200 @@ def second_order_polynomial(Y, m0, C0, n0=None, S0=None, d=0.9):
         SS.append(S)
         
     return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
+
+
+def fourier_dlm(Y, m0, C0, n0=None, S0=None, T=None, d=0.9):
+    
+    """A second order polynomial dynamic linear model with
+    trigonemetric terms in the regression vector F to
+    model periodic patterns.
+    
+    The parameter vector of this DLM has four parameters:
+    
+    theta_1: level of the time series (mu)
+    theta_2: the increase or decrease in level (beta)
+    theta_3: the amplitude of the cosine function
+    theta_4: the amplitude of the sine function
+    
+    This dlm assumes that the constant observation variance is not known
+    a priori, and updates an estimated St of it at each time t.
+    Y - Data vector
+    m0 - Initial prior mean level
+    C0 - Initial prior level variance
+    d - Discount rate used in determining the a priori variance R.
+        Typical values between 0.8 and 1.0
+    T - The period length of the series  
+    n0 - Initial estimate of the degrees of freedom
+    S0 - Initial estimate of observation variance V"""
+    
+    ##Set observational variance parameters
+    n = n0    ##Initial degrees of freedom
+    S = S0    ##Initial estimate of observation variance
+    
+    ##Initial m vector
+    m = m0
+    
+    ##Initial C matrix
+    C = C0 
+    
+    ##Mount system matrix
+    G = np.eye(4)
+    G[0,1] = 1
+
+    
+    mm = []   ##Save all estimates of systemic mean
+    CC = []   ##Save all estimates of the systemic variance
+    SS = []   ##Save all estimates of the observation variance
+    ff = []   ##Save all forecasts
+    QQ = []   ##Save all forecast variances
+    
+    for i in range(Y.size):
+        
+        ##Calculate evolution matrix for level of the series
+        W = (1-d)/d*C   ##Determine evolution matrix for trend term
+        y = Y[i]    ##Current observation
+        
+        ##Current time
+        t = i    ##
+        
+        ##Update posterior parameters
+        m, C, f, Q, n, S = update_posterior_Fourier(y, m, C, G, W, n, S, t, T)
+#        print m
+        
+        mm.append(m)
+        CC.append(C)
+        ff.append(f)
+        QQ.append(Q)
+        SS.append(S)
+        
+    return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
+
+
+def multiprocess_dlm(Y, m0, C0, n0=None, S0=None, T=None, d=None):
+    
+    """
+    A multiprocess DLM which runs two dlms each time and computes the probabilities
+    of each one.
+    
+    
+    The employd DLMs are second order polynomial dynamic linear model with
+    trigonometric terms in the regression vector F to
+    model periodic patterns.
+    
+    The parameter vector of this DLM has four parameters:
+    
+    theta_1: level of the time series (mu)
+    theta_2: the increase or decrease in level (beta)
+    theta_3: the amplitude of the cosine function
+    theta_4: the amplitude of the sine function
+    
+    This dlm assumes that the constant observation variance is not known
+    a priori, and updates an estimated St of it at each time t.
+    Y - Data vector
+    m0 - Initial prior mean level
+    C0 - Initial prior level variance
+    d - Discount rate used in determining the a priori variance R.
+        Typical values between 0.8 and 1.0
+    T - The period length of the series  
+    n0 - Initial estimate of the degrees of freedom
+    S0 - Initial estimate of observation variance V"""
+    
+    ##Set observational variance parameters
+    n_1 = n_2 = n0    ##Initial degrees of freedom
+    S_1 = S_2 = S0    ##Initial estimate of observation variance
+    
+    
+    ##Initial m vectors (1 is for first DLM and 2 is for the second DLM)
+    m_1 = m_2 = m0
+    
+    ##Initial C matrices
+    C_1 = C_2 = C0
+    
+    d_1 = d[0]    ##First discount factor
+    d_2 = d[1]    ##Second discount factor
+    
+    T_1 = T[0]    ##Period of first DLM
+    T_2 = T[1]    ##Period of second
+    
+    p_1 = 0.5      ##Initial probability of first DLM
+    p_2 = 0.5      ##Initial probability of second DLM
+    
+    ##Mount system matrix
+    G = np.eye(4)
+    G[0,1] = 1
+
+    p_1_list = []
+    p_2_list = []
+    
+    
+    for i in range(Y.size):
+        
+        ##Calculate evolution matrices for level of the series
+        W_1 = (1-d_1)/d_1*C_1   ##Determine evolution matrix for trend term
+        W_2 = (1-d_2)/d_2*C_2
+        
+        ##Take current observation
+        y = Y[i]
+        
+        ##Current time
+        t = i    ##
+        
+        ##Update posterior parameters
+        m_1, C_1, f_1, Q_1, n_1, S_1 = update_posterior_Fourier(y, m_1, C_1, G, W_1, n_1, S_1, t, T_1)
+        m_2, C_2, f_2, Q_2, n_2, S_2 = update_posterior_Fourier(y, m_2, C_2, G, W_2, n_2, S_2, t, T_2)
+        
+        ##COmpute likelihood of each dlm
+        l_1 = norm.pdf(y, f_1, Q_1)
+        l_2 = norm.pdf(y, f_2, Q_2)
+        
+        const_normalizacao = l_1*p_1+l_2*p_2
+        
+        ##Atualiza probabilidades de cada DLM
+        
+        p_1 = l_1*p_1/const_normalizacao
+        p_2 = l_2*p_2/const_normalizacao
+        
+        p_1_list.append(p_1)
+        p_2_list.append(p_2)
+        
+        
+    return np.array(p_1_list), np.array(p_2_list)
+
+def update_posterior_Fourier(y, m, C, G, W, n, S, t, T):
+    
+    """This function updates the posterior distribution for a univariate dlm
+       Notice that the regression vector F uses a Fourier basis
+       Inputs:
+           n: Number of degrees of freedom
+           S: Current estimate of observational variance
+           T: Length of period in time series
+           t: Current time"""
+    
+    ##Prior at t-1
+    a = np.dot(G, m)
+    R = np.dot(G, np.dot(C, G.T))+W
+    
+    ##Mount regression vector at time t
+    F = np.zeros(4)
+    F[0] = 1
+    F[1] = 0
+    F[2] = np.sin(2*np.pi/T*t)
+    F[3] = np.cos(2*np.pi/T*t)
+    
+    ##One-step forecast distribution
+    f = np.dot(F, a)
+    Q = np.dot(F, np.dot(R,F))+S    
+    ##Posterior at time t
+#    A = np.dot(np.dot(R,F), np.linalg.inv(Q))    ##Adjustment factor
+    A = (1/Q)*np.dot(R,F)    ##Adjustment factor
+    e = y-f    ##Observational error (This is a scalar)
+    ##Update observational variance parameters
+    n = n+1
+    S_new = S+S/n*(e**2/Q-1)
+    m = a+e*A    ##Posterior mean
+    C = S_new/S*(R-Q*np.outer(A,A))   ##Posterior covariance matrix
+    
+    return m, C, f, Q, n, S_new
 
 
 def update_posterior(y, m, C, F, G, W, V, d=None):
