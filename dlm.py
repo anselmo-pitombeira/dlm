@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 """
 Created on Sat Sep 19 16:11:47 2015
@@ -419,10 +420,214 @@ def fourier_dlm(Y, m0, C0, n0=None, S0=None, T=None, d=0.9):
     return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
 
 
-def multiprocess_dlm(Y, m0, C0, n0=None, S0=None, T=None, d=None):
+# def multiprocess_dlm(Y, m0, C0, n0=None, S0=None, T=None, d=None):
+    
+#     """
+#     A multiprocess DLM which runs two dlms each time and computes the probabilities
+#     of each one.
+    
+    
+#     The employd DLMs are second order polynomial dynamic linear model with
+#     trigonometric terms in the regression vector F to
+#     model periodic patterns.
+    
+#     The parameter vector of this DLM has four parameters:
+    
+#     theta_1: level of the time series (mu)
+#     theta_2: the increase or decrease in level (beta)
+#     theta_3: the amplitude of the cosine function
+#     theta_4: the amplitude of the sine function
+    
+#     This dlm assumes that the constant observation variance is not known
+#     a priori, and updates an estimated St of it at each time t.
+#     Y - Data vector
+#     m0 - Initial prior mean level
+#     C0 - Initial prior level variance
+#     d - Discount rate used in determining the a priori variance R.
+#         Typical values between 0.8 and 1.0
+#     T - The period length of the series  
+#     n0 - Initial estimate of the degrees of freedom
+#     S0 - Initial estimate of observation variance V"""
+    
+#     ##Set observational variance parameters
+#     n_1 = n_2 = n0    ##Initial degrees of freedom
+#     S_1 = S_2 = S0    ##Initial estimate of observation variance
+    
+    
+#     ##Initial m vectors (1 is for first DLM and 2 is for the second DLM)
+#     m_1 = m_2 = m0
+    
+#     ##Initial C matrices
+#     C_1 = C_2 = C0
+    
+#     d_1 = d[0]    ##First discount factor
+#     d_2 = d[1]    ##Second discount factor
+    
+#     T_1 = T[0]    ##Period of first DLM
+#     T_2 = T[1]    ##Period of second
+    
+#     p_1 = 0.5      ##Initial probability of first DLM
+#     p_2 = 0.5      ##Initial probability of second DLM
+    
+#     ##Mount system matrix
+#     G = np.eye(4)
+#     G[0,1] = 1
+
+#     p_1_list = []
+#     p_2_list = []
+    
+    
+#     for i in range(Y.size):
+        
+#         ##Calculate evolution matrices for level of the series
+#         W_1 = (1-d_1)/d_1*C_1   ##Determine evolution matrix for trend term
+#         W_2 = (1-d_2)/d_2*C_2
+        
+#         ##Take current observation
+#         y = Y[i]
+        
+#         ##Current time
+#         t = i    ##
+        
+#         ##Update posterior parameters
+#         m_1, C_1, f_1, Q_1, n_1, S_1 = update_posterior_Fourier(y, m_1, C_1, G, W_1, n_1, S_1, t, T_1)
+#         m_2, C_2, f_2, Q_2, n_2, S_2 = update_posterior_Fourier(y, m_2, C_2, G, W_2, n_2, S_2, t, T_2)
+        
+#         ##COmpute likelihood of each dlm
+#         l_1 = norm.pdf(y, f_1, Q_1)
+#         l_2 = norm.pdf(y, f_2, Q_2)
+        
+#         const_normalizacao = l_1*p_1+l_2*p_2
+        
+#         ##Atualiza probabilidades de cada DLM
+        
+#         p_1 = l_1*p_1/const_normalizacao
+#         p_2 = l_2*p_2/const_normalizacao
+        
+#         if p_1 >=1.0-1e-6:
+#             p_1 = 0.99
+#             p_2 = 0.01
+            
+#         if p_2 >=1.0-1e-6:
+#             p_1 = 0.01
+#             p_2 = 0.99
+        
+#         p_1_list.append(p_1)
+#         p_2_list.append(p_2)
+        
+        
+#     return np.array(p_1_list), np.array(p_2_list)
+
+
+# def multiprocess_dlm(Y, m0, C0, n0=None, S0=None, T=None, d=None):
+    
+#     """
+#     A multiprocess DLM which runs multiple dlms each time step
+#     for a given time series Y and computes the probabilities
+#     of each one.
+    
+    
+#     The employd DLMs are second order polynomial dynamic linear model with
+#     trigonometric terms in the regression vector F to
+#     model periodic patterns.
+    
+#     The parameter vector of this DLM has four parameters:
+    
+#     theta_1: level of the time series (mu)
+#     theta_2: the increase or decrease in level (beta)
+#     theta_3: the amplitude of the cosine function
+#     theta_4: the amplitude of the sine function
+    
+#     This dlm assumes that the constant observation variance is not known
+#     a priori, and updates an estimated St of it at each time t.
+#     Y - Data vector
+#     m0 - Initial prior mean level
+#     C0 - Initial prior level variance
+#     d - Discount rate used in determining the a priori variance R.
+#         Typical values between 0.8 and 1.0
+#     T - Vector of period parameters for each DLM
+#     n0 - Initial estimate of the degrees of freedom
+#     S0 - Initial estimate of observation variance V"""
+    
+    
+#     ##Set observational variance parameters
+#     # n_1 = n_2 = n0    ##Initial degrees of freedom
+#     # S_1 = S_2 = S0    ##Initial estimate of observation variance
+    
+    
+#     ##Initial m vectors (1 is for first DLM and 2 is for the second DLM)
+#     # m_1 = m_2 = m0
+    
+#     ##Initial C matrices
+#     # C_1 = C_2 = C0
+    
+#     # d_1 = d[0]    ##First discount factor
+#     # d_2 = d[1]    ##Second discount factor
+    
+    
+    
+    
+#     T_1 = T[0]    ##Period of first DLM
+#     T_2 = T[1]    ##Period of second
+    
+#     p_1 = 0.5      ##Initial probability of first DLM
+#     p_2 = 0.5      ##Initial probability of second DLM
+    
+#     ##Mount system matrix
+#     G = np.eye(4)
+#     G[0,1] = 1
+
+#     p_1_list = []
+#     p_2_list = []
+    
+    
+#     for i in range(Y.size):
+        
+#         ##Calculate evolution matrices for level of the series
+#         W_1 = (1-d_1)/d_1*C_1   ##Determine evolution matrix for trend term
+#         W_2 = (1-d_2)/d_2*C_2
+        
+#         ##Take current observation
+#         y = Y[i]
+        
+#         ##Current time
+#         t = i    ##
+        
+#         ##Update posterior parameters
+#         m_1, C_1, f_1, Q_1, n_1, S_1 = update_posterior_Fourier(y, m_1, C_1, G, W_1, n_1, S_1, t, T_1)
+#         m_2, C_2, f_2, Q_2, n_2, S_2 = update_posterior_Fourier(y, m_2, C_2, G, W_2, n_2, S_2, t, T_2)
+        
+#         ##COmpute likelihood of each dlm
+#         l_1 = norm.pdf(y, f_1, Q_1)
+#         l_2 = norm.pdf(y, f_2, Q_2)
+        
+#         const_normalizacao = l_1*p_1+l_2*p_2
+        
+#         ##Atualiza probabilidades de cada DLM
+        
+#         p_1 = l_1*p_1/const_normalizacao
+#         p_2 = l_2*p_2/const_normalizacao
+        
+#         if p_1 >=1.0-1e-6:
+#             p_1 = 0.99
+#             p_2 = 0.01
+            
+#         if p_2 >=1.0-1e-6:
+#             p_1 = 0.01
+#             p_2 = 0.99
+        
+#         p_1_list.append(p_1)
+#         p_2_list.append(p_2)
+        
+        
+#     return np.array(p_1_list), np.array(p_2_list)
+
+
+def multiprocess_dlm(Y, dlms):
     
     """
-    A multiprocess DLM which runs two dlms each time and computes the probabilities
+    A multiprocess DLM which runs multiple dlms each time step
+    for a given time series Y and computes the probabilities
     of each one.
     
     
@@ -439,75 +644,64 @@ def multiprocess_dlm(Y, m0, C0, n0=None, S0=None, T=None, d=None):
     
     This dlm assumes that the constant observation variance is not known
     a priori, and updates an estimated St of it at each time t.
-    Y - Data vector
-    m0 - Initial prior mean level
-    C0 - Initial prior level variance
-    d - Discount rate used in determining the a priori variance R.
-        Typical values between 0.8 and 1.0
-    T - The period length of the series  
-    n0 - Initial estimate of the degrees of freedom
-    S0 - Initial estimate of observation variance V"""
     
-    ##Set observational variance parameters
-    n_1 = n_2 = n0    ##Initial degrees of freedom
-    S_1 = S_2 = S0    ##Initial estimate of observation variance
+    Y - Time series as a numpy array
+    dlms - list of DLMs to be run
+    """
     
+    n = len(dlms)
     
-    ##Initial m vectors (1 is for first DLM and 2 is for the second DLM)
-    m_1 = m_2 = m0
+    probs = []
     
-    ##Initial C matrices
-    C_1 = C_2 = C0
+    ##Initialize prior probabilities of DLMs
     
-    d_1 = d[0]    ##First discount factor
-    d_2 = d[1]    ##Second discount factor
+    p = np.ones(n)/n
     
-    T_1 = T[0]    ##Period of first DLM
-    T_2 = T[1]    ##Period of second
-    
-    p_1 = 0.5      ##Initial probability of first DLM
-    p_2 = 0.5      ##Initial probability of second DLM
-    
-    ##Mount system matrix
-    G = np.eye(4)
-    G[0,1] = 1
-
-    p_1_list = []
-    p_2_list = []
-    
-    
-    for i in range(Y.size):
-        
-        ##Calculate evolution matrices for level of the series
-        W_1 = (1-d_1)/d_1*C_1   ##Determine evolution matrix for trend term
-        W_2 = (1-d_2)/d_2*C_2
+    for t in range(Y.size):
         
         ##Take current observation
-        y = Y[i]
+        y = Y[t]
         
-        ##Current time
-        t = i    ##
+        likelihoods = []
         
-        ##Update posterior parameters
-        m_1, C_1, f_1, Q_1, n_1, S_1 = update_posterior_Fourier(y, m_1, C_1, G, W_1, n_1, S_1, t, T_1)
-        m_2, C_2, f_2, Q_2, n_2, S_2 = update_posterior_Fourier(y, m_2, C_2, G, W_2, n_2, S_2, t, T_2)
+        for dlm in dlms:
+            
+            a,R = dlm.predict_state()
+            
+            F = dlm.mount_regression_vector(t)
+            
+            f,Q = dlm.predict_observation(a,R,F)
+            
+            dlm.update_state(y,F,a,R,f,Q)
+            
+            ##Compute likelihood of dlm
+            likeli = norm.pdf(y, f, Q)
+            
+            likelihoods.append(likeli)
+            
+            
+        likelihoods = np.array(likelihoods)
         
-        ##COmpute likelihood of each dlm
-        l_1 = norm.pdf(y, f_1, Q_1)
-        l_2 = norm.pdf(y, f_2, Q_2)
+        ##Update probability of each DLM
+        ##Notice the use of Bayes theorem
+        norm_const = (likelihoods*p).sum()
+                
+        p = likelihoods*p/norm_const
         
-        const_normalizacao = l_1*p_1+l_2*p_2
+        ##Renormalization
+        ##(avoids probability to be exactly one or zero, which causes degeneration)
+        p[p>1.0-1e-9] = 1.0-1e-9
+        p[p<0.0+1e-9] = 0.0+1e-9
         
-        ##Atualiza probabilidades de cada DLM
+        norm_const = (likelihoods*p).sum()
         
-        p_1 = l_1*p_1/const_normalizacao
-        p_2 = l_2*p_2/const_normalizacao
-        
-        p_1_list.append(p_1)
-        p_2_list.append(p_2)
+        p = likelihoods*p/norm_const
         
         
-    return np.array(p_1_list), np.array(p_2_list)
+        probs.append(p)
+        
+    return np.array(probs)
+
 
 def update_posterior_Fourier(y, m, C, G, W, n, S, t, T):
     
@@ -626,3 +820,126 @@ def bayesian_smoother(G, m, C, m_bar, C_bar):
         C_bar_k[T-k,:,:] = C[T-k,:,:]+np.dot(np.dot(Bt_k, C_bar_k[T-k+1,:,:]-C_bar[T-k+1,:,:]), Bt_k.T)
         
     return m_bar_k, C_bar_k
+
+
+class Fourier_dlm:
+    
+    """
+    Defines a second order DLM with trigonometric terms in the regression vector.
+    """
+    
+    def __init__(self,m0,C0,n0,S0,T,d=0.95):
+        
+        """
+        m0 - Initial prior mean level
+        C0 - Initial prior level variance
+        d - Discount rate used in determining the a priori variance R.
+            Typical values between 0.8 and 1.0
+        T - The period length of the trigonometric terms 
+        n0 - Initial estimate of the degrees of freedom
+        S0 - Initial estimate of observation variance V
+        """
+        
+        self.m = m0
+        self.C = C0
+        self.n = n0
+        self.S = S0
+        self.d = d
+        self.T = T
+        
+        ##Mount system matrix
+        self.G = np.eye(4)
+        self.G[0,1] = 1
+    
+    
+    def predict_state(self):
+        
+        """Generate the prior distribution of the state at next time.
+           Notice that the regression vector F uses a Fourier basis
+           Inputs:
+               n: Number of degrees of freedom
+               S: Current estimate of observational variance
+               T: Length of period in time series
+               t: Current time"""
+               
+        ##Calculate evolution matrix for level of the series
+        W = (1-self.d)/self.d*self.C
+        
+        ##Prior at t-1
+        a = np.dot(self.G, self.m)
+        R = np.dot(self.G, np.dot(self.C, self.G.T))+W
+        
+        return a, R
+    
+    
+    def mount_regression_vector(self,t):
+        
+        ##Mount regression vector at time t
+        F = np.zeros(4)
+        F[0] = 1
+        F[1] = 0
+        F[2] = np.sin(2*np.pi/self.T*t)
+        F[3] = np.cos(2*np.pi/self.T*t)
+        
+        return F
+        
+    
+    def predict_observation(self, a, R, F):
+        
+        ##One-step forecast distribution
+        f = np.dot(F, a)
+        Q = np.dot(F, np.dot(R,F))+self.S
+        
+        return f,Q
+    
+    
+    def update_state(self,y,F,a,R,f,Q):
+        
+        ##Update observational variance parameters
+        
+        A = (1/Q)*np.dot(R,F)    ##Adjustment factor
+        e = y-f                  ##Observational error (This is a scalar)
+        self.n = self.n+1
+        S_new = self.S+self.S/self.n*(e**2/Q-1)
+        self.m = a+e*A    ##Posterior mean
+        self.C = S_new/self.S*(R-Q*np.outer(A,A))   ##Posterior covariance matrix
+        self.S = S_new
+        
+        
+    def apply_DLM(self, Y):
+        
+        
+        mm = []   ##Save all estimates of systemic mean
+        CC = []   ##Save all estimates of the systemic variance
+        SS = []   ##Save all estimates of the observation variance
+        ff = []   ##Save all forecasts
+        QQ = []   ##Save all forecast variances
+        
+        for t in range(Y.size):
+            
+            a,R = self.predict_state()
+            
+            F = self.mount_regression_vector(t)
+            
+            f,Q = self.predict_observation(a,R,F)
+            
+            ##Take current observation at time t
+            y = Y[t]
+            
+            self.update_state(y,F,a,R,f,Q)
+            
+            
+            ##Save statistics
+            mm.append(self.m)
+            CC.append(self.C)
+            ff.append(f)
+            QQ.append(Q)
+            SS.append(self.S)
+            
+        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
+        
+        
+        
+    
+
+
