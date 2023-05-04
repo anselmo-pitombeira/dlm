@@ -7,7 +7,8 @@ Created on Sat Sep 19 16:11:47 2015
 """
 
 import numpy as np
-from scipy.stats import norm     ##Distribuição normal
+from scipy.stats import norm     ##Normal pdf
+from scipy.linalg import block_diag    ##Builds block diagonal matrix
 
 def first_order_constant(Y, m0, C0, W, V, d = None):
     
@@ -822,7 +823,7 @@ def bayesian_smoother(G, m, C, m_bar, C_bar):
     return m_bar_k, C_bar_k
 
 
-class Fourier_dlm:
+class Fourier_dlm_antigo:
     
     """
     Defines a second order DLM with trigonometric terms in the regression vector.
@@ -848,7 +849,7 @@ class Fourier_dlm:
         self.T = T
         
         ##Mount system matrix
-        self.G = np.eye(4)
+        self.G = np.eye(6)
         self.G[0,1] = 1
     
     
@@ -875,11 +876,13 @@ class Fourier_dlm:
     def mount_regression_vector(self,t):
         
         ##Mount regression vector at time t
-        F = np.zeros(4)
+        F = np.zeros(6)
         F[0] = 1
         F[1] = 0
         F[2] = np.sin(2*np.pi/self.T*t)
         F[3] = np.cos(2*np.pi/self.T*t)
+        F[4] = np.sin(2*np.pi*2/self.T*t)    ##Segundo harmônico
+        F[5] = np.cos(2*np.pi*2/self.T*t)    ##Segundo harmônico
         
         return F
         
@@ -938,6 +941,165 @@ class Fourier_dlm:
             
         return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
         
+
+class Fourier_dlm:
+    
+    """
+    Defines a second order DLM with trigonometric terms in the regression vector.
+    """
+    
+    def __init__(self,m0,C0,n0,S0,T,h=1,d=0.95):
+        
+        """
+        m0 - Initial prior mean level
+        C0 - Initial prior level variance
+        n0 - Initial estimate of the degrees of freedom
+        S0 - Initial estimate of observation variance V
+        T - The period length of the trigonometric terms 
+        h - Number of harmonic terms
+        d - Discount rate used in determining the a priori variance R.
+            Typical values between 0.8 and 1.0
+        """
+        
+        self.m = m0
+        self.C = C0
+        self.n = n0
+        self.S = S0
+        self.d = d
+        self.T = T
+        self.h = h
+        
+        ##MOUNT SYSTEM MATRIX
+        
+        ##Matrix of local level and trend terms
+        G1 = np.eye(1)
+        ##G1[0,1] = 1
+        
+        ##Matrices corresponding to harmonics
+        H_matrices = []
+        
+        for j in range(1,h+1):
+        
+            omega = 2*np.pi/T*j
+            
+            H = np.eye(2)
+            H[0,0] = np.cos(omega)
+            H[0,1] = np.sin(omega)
+            H[1,0] = -np.sin(omega)
+            H[1,1] = np.cos(omega)
+            
+            H_matrices.append(H)
+            
+        H = block_diag(*H_matrices)
+        
+        ##Glue matrices G1 and H together as a single
+        ##block diagonal matrix:
+            
+        G = block_diag(G1,H)
+        
+        print("Matriz G = ", G)
+        
+        self.G = G
+        
+        ##Mount regression vector
+        ##This vector has
+        ##2 components corresponding to the local
+        ##level and linear trend
+        ##2 components for each harmonic
+        ##corresponding to the main harmonic and its conjugate
+        ##Only the main harmonic is used in the regression vector
+        ##This amounts to 2h terms
+        
+        F_size = 1+2*self.h
+        
+        F = np.zeros(F_size)
+        F[0] = 1    ##Local level term
+        ##F[1] = 0    ##Linear trend term
+        
+        for j in range(1, F_size-1, 2):
+        ##We step 2 by 2
+            
+            F[j] = 1    ##Main harmonic
+            F[j+1] = 0  ##Conjugate harmonic
+            
+        print("Vetor de regressão = ", F)
+        
+        self.F = F
+    
+    
+    def predict_state(self):
+        
+        """Generate the prior distribution of the state at next time.
+           Notice that the regression vector F uses a Fourier basis
+           Inputs:
+               n: Number of degrees of freedom
+               S: Current estimate of observational variance
+               T: Length of period in time series
+               t: Current time"""
+               
+        ##Calculate evolution matrix for level of the series
+        W = (1-self.d)/self.d*self.C
+        
+        ##Prior at t-1
+        a = np.dot(self.G, self.m)
+        R = np.dot(self.G, np.dot(self.C, self.G.T))+W
+        
+        return a, R
+    
+    def predict_observation(self, a, R, F):
+        
+        ##One-step forecast distribution
+        f = np.dot(F, a)
+        Q = np.dot(F, np.dot(R,F))+self.S
+        
+        
+        return f,Q
+    
+    
+    def update_state(self,y,F,a,R,f,Q):
+        
+        ##Update observational variance parameters
+        
+        A = (1/Q)*np.dot(R,F)    ##Adjustment factor
+        e = y-f                  ##Observational error (This is a scalar)
+        self.n = self.n+1
+        S_new = self.S+self.S/self.n*(e**2/Q-1)
+        self.m = a+e*A    ##Posterior mean
+        self.C = S_new/self.S*(R-Q*np.outer(A,A))   ##Posterior covariance matrix
+        self.S = S_new
+        
+        
+    def apply_DLM(self, Y):
+        
+        
+        mm = []   ##Save all estimates of systemic mean
+        CC = []   ##Save all estimates of the systemic variance
+        SS = []   ##Save all estimates of the observation variance
+        ff = []   ##Save all forecasts
+        QQ = []   ##Save all forecast variances
+        
+        for t in range(Y.size):
+            
+            a,R = self.predict_state()
+            
+            F = self.F
+            
+            f,Q = self.predict_observation(a,R,F)
+            
+            ##Take current observation at time t
+            y = Y[t]
+            
+            self.update_state(y,F,a,R,f,Q)
+            
+            
+            ##Save statistics
+            mm.append(self.m)
+            CC.append(self.C)
+            ff.append(f)
+            QQ.append(Q)
+            SS.append(self.S)
+            
+        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
         
         
     
