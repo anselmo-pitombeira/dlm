@@ -945,10 +945,14 @@ class Fourier_dlm_antigo:
 class Fourier_dlm:
     
     """
-    Defines a second order DLM with trigonometric terms in the regression vector.
+    Defines a first order DLM with harmonics evolving over time.
+    
+    This a DLM with two main components:
+        - The level of the time series.
+        - A vector of h harmonic components evolving over time.
     """
     
-    def __init__(self,m0,C0,n0,S0,T,h=1,d=0.95):
+    def __init__(self,m0,C0,n0,S0,T,h=1,d1=0.99,d2=0.99):
         
         """
         m0 - Initial prior mean level
@@ -957,15 +961,18 @@ class Fourier_dlm:
         S0 - Initial estimate of observation variance V
         T - The period length of the trigonometric terms 
         h - Number of harmonic terms
-        d - Discount rate used in determining the a priori variance R.
-            Typical values between 0.8 and 1.0
+        d1 - Discount factor used in determining the a priori variance R
+             relative to the level of the time series. Typical values between 0.8 and 1.0
+        d2 - Discount factor relative to the harmonics component.
+            
         """
         
         self.m = m0
         self.C = C0
         self.n = n0
         self.S = S0
-        self.d = d
+        self.d1 = d1
+        self.d2 = d2
         self.T = T
         self.h = h
         
@@ -980,7 +987,7 @@ class Fourier_dlm:
         
         for j in range(1,h+1):
         
-            omega = 2*np.pi/T*j
+            omega = 2*np.pi/T*j    ##Fourier frequencies
             
             H = np.eye(2)
             H[0,0] = np.cos(omega)
@@ -1038,11 +1045,23 @@ class Fourier_dlm:
                t: Current time"""
                
         ##Calculate evolution matrix for level of the series
-        W = (1-self.d)/self.d*self.C
+        ##W = (1-self.d)/self.d*self.C
         
-        ##Prior at t-1
+        ##Compute P matrix (Covariance o r.v. G * \theta)
+        P = np.dot(self.G, np.dot(self.C, self.G.T))
+        
+        ##Extract blocks of P corresponding to components
+        P1 = P[0,0]*np.eye(1)  ##Notice this is a 1 x 1 matrix, not a scalar
+        P2 = P[1:,1:]
+        
+        ##Create R matrix (covariance matrix of prior distribution at time t)
+        R1 = 1/self.d1*P1
+        R2 = 1/self.d2*P2
+        
+        ##Prior at time t
         a = np.dot(self.G, self.m)
-        R = np.dot(self.G, np.dot(self.C, self.G.T))+W
+        R = block_diag(R1,R2)
+        ##R = np.dot(self.G, np.dot(self.C, self.G.T))+W
         
         return a, R
     
