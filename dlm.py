@@ -669,7 +669,9 @@ def multiprocess_dlm(Y, dlms):
             
             a,R = dlm.predict_state()
             
-            F = dlm.mount_regression_vector(t)
+            ##F = dlm.mount_regression_vector(t)
+            
+            F = dlm.F
             
             f,Q = dlm.predict_observation(a,R,F)
             
@@ -1004,7 +1006,7 @@ class Fourier_dlm:
             
         G = block_diag(G1,H)
         
-        print("Matriz G = ", G)
+        ##print("Matriz G = ", G)
         
         self.G = G
         
@@ -1029,7 +1031,7 @@ class Fourier_dlm:
             F[j] = 1    ##Main harmonic
             F[j+1] = 0  ##Conjugate harmonic
             
-        print("Vetor de regressão = ", F)
+        ##print("Vetor de regressão = ", F)
         
         self.F = F
     
