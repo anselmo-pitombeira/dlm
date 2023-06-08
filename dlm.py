@@ -633,16 +633,9 @@ def multiprocess_dlm(Y, dlms):
     
     
     The employd DLMs are second order polynomial dynamic linear model with
-    trigonometric terms in the regression vector F to
+    harmonic terms to
     model periodic patterns.
-    
-    The parameter vector of this DLM has four parameters:
-    
-    theta_1: level of the time series (mu)
-    theta_2: the increase or decrease in level (beta)
-    theta_3: the amplitude of the cosine function
-    theta_4: the amplitude of the sine function
-    
+        
     This dlm assumes that the constant observation variance is not known
     a priori, and updates an estimated St of it at each time t.
     
@@ -687,7 +680,10 @@ def multiprocess_dlm(Y, dlms):
         
         ##Update probability of each DLM
         ##Notice the use of Bayes theorem
-        norm_const = (likelihoods*p).sum()
+        
+        ##Computer normalization constant
+        ##norm_const = (likelihoods*p).sum()
+        norm_const = np.dot(likelihoods, p)
                 
         p = likelihoods*p/norm_const
         
@@ -696,7 +692,8 @@ def multiprocess_dlm(Y, dlms):
         p[p>1.0-1e-9] = 1.0-1e-9
         p[p<0.0+1e-9] = 0.0+1e-9
         
-        norm_const = (likelihoods*p).sum()
+        ##norm_const = (likelihoods*p).sum()
+        norm_const = np.dot(likelihoods, p)
         
         p = likelihoods*p/norm_const
         
@@ -944,7 +941,7 @@ class Fourier_dlm_antigo:
         return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
         
 
-class Fourier_dlm:
+class harmonic_dlm:
     
     """
     Defines a first order DLM with harmonics evolving over time.
@@ -981,7 +978,9 @@ class Fourier_dlm:
         ##MOUNT SYSTEM MATRIX
         
         ##Matrix of local level and trend terms
-        G1 = np.eye(1)
+        G1 = np.zeros((2,2))
+        G1[0,0] = G1[0,1] = G1[1,1] = 1
+        ##G1 = np.eye(1)
         ##G1[0,1] = 1
         
         ##Matrices corresponding to harmonics
@@ -989,7 +988,7 @@ class Fourier_dlm:
         
         for j in range(1,h+1):
         
-            omega = 2*np.pi/T*j    ##Fourier frequencies
+            omega = 2*np.pi/T*j    ##Angular frequencies
             
             H = np.eye(2)
             H[0,0] = np.cos(omega)
@@ -1019,13 +1018,13 @@ class Fourier_dlm:
         ##Only the main harmonic is used in the regression vector
         ##This amounts to 2h terms
         
-        F_size = 1+2*self.h
+        F_size = 2+2*self.h
         
         F = np.zeros(F_size)
         F[0] = 1    ##Local level term
-        ##F[1] = 0    ##Linear trend term
+        F[1] = 0    ##Linear trend term
         
-        for j in range(1, F_size-1, 2):
+        for j in range(2, F_size-1, 2):
         ##We step 2 by 2
             
             F[j] = 1    ##Main harmonic
@@ -1046,24 +1045,31 @@ class Fourier_dlm:
                T: Length of period in time series
                t: Current time"""
                
-        ##Calculate evolution matrix for level of the series
-        ##W = (1-self.d)/self.d*self.C
+        ##Parameters of prior distribution at time t
+        ##(Prediction distribution of the state/parameters vectors)
+        a = np.dot(self.G, self.m)
+        
+        ##Compute R matrix at time t (covariance matrix of prior distribution at time t)
         
         ##Compute P matrix (Covariance o r.v. G * \theta)
         P = np.dot(self.G, np.dot(self.C, self.G.T))
         
-        ##Extract blocks of P corresponding to components
-        P1 = P[0,0]*np.eye(1)  ##Notice this is a 1 x 1 matrix, not a scalar
-        P2 = P[1:,1:]
+        ##Extract blocks of P corresponding to trend and periodic components
+        ##P1 = P[0,0]*np.eye(1)  ##Notice this is a 1 x 1 matrix, not a scalar
+        P1 = P[0:2,0:2]    ##Level and trend components
+        P2 = P[2:,2:]      ##Periodic/Harmonic components
         
-        ##Create R matrix (covariance matrix of prior distribution at time t)
-        R1 = 1/self.d1*P1
-        R2 = 1/self.d2*P2
+        ##Updates R matrices for components with different discount factors
+        R1 = 1/self.d1*P1    ##Level and trend components
+        R2 = 1/self.d2*P2    ##Periodic/Harmonic components
         
-        ##Prior at time t
-        a = np.dot(self.G, self.m)
-        R = block_diag(R1,R2)
-        ##R = np.dot(self.G, np.dot(self.C, self.G.T))+W
+        ##R is equal P except for the updated blocks R1 and R2
+        R = P   ##Notice that R is the same object in memory as P
+        
+        ##Correct R with the updated R1 and R2 components
+        
+        R[0:2,0:2] = R1
+        R[2:,2:] = R2
         
         return a, R
     
@@ -1081,7 +1087,7 @@ class Fourier_dlm:
         
         ##Update observational variance parameters
         
-        A = (1/Q)*np.dot(R,F)    ##Adjustment factor
+        A = (1/Q)*np.dot(R,F)    ##Adjustment factor (Kalman gain)
         e = y-f                  ##Observational error (This is a scalar)
         self.n = self.n+1
         S_new = self.S+self.S/self.n*(e**2/Q-1)
