@@ -7,8 +7,9 @@ Created on Sat Sep 19 16:11:47 2015
 """
 
 import numpy as np
-from scipy.stats import norm     ##Normal pdf
-from scipy.linalg import block_diag    ##Builds block diagonal matrix
+from scipy.stats import norm, multivariate_normal     ##Normal pdf
+from scipy.linalg import block_diag, solve, LinAlgError
+from numpy.linalg import slogdet
 
 def first_order_constant(Y, m0, C0, W, V, d = None):
     
@@ -651,7 +652,7 @@ def multiprocess_dlm(Y, dlms):
     
     p = np.ones(n)/n
     
-    for t in range(Y.size):
+    for t in range(Y.shape[0]):
         
         ##Take current observation
         y = Y[t]
@@ -664,14 +665,15 @@ def multiprocess_dlm(Y, dlms):
             
             ##F = dlm.mount_regression_vector(t)
             
-            F = dlm.F
+            ##F = dlm.F
             
-            f,Q = dlm.predict_observation(a,R,F)
+            f,Q = dlm.predict_observation(a,R)
             
-            dlm.update_state(y,F,a,R,f,Q)
+            dlm.update_state(y,a,R,f,Q)
             
             ##Compute likelihood of dlm
-            likeli = norm.pdf(y, f, Q)
+            ##likeli = norm.pdf(y, f, Q)
+            likeli = multivariate_normal.pdf(y, f, Q)
             
             likelihoods.append(likeli)
             
@@ -689,13 +691,13 @@ def multiprocess_dlm(Y, dlms):
         
         ##Renormalization
         ##(avoids probability to be exactly one or zero, which causes degeneration)
-        p[p>1.0-1e-9] = 1.0-1e-9
-        p[p<0.0+1e-9] = 0.0+1e-9
+        ##p[p>1.0-1e-9] = 1.0-1e-9
+        ##p[p<0.0+1e-9] = 0.0+1e-9
         
         ##norm_const = (likelihoods*p).sum()
-        norm_const = np.dot(likelihoods, p)
+        ##norm_const = np.dot(likelihoods, p)
         
-        p = likelihoods*p/norm_const
+        ##p = likelihoods*p/norm_const
         
         
         probs.append(p)
@@ -790,6 +792,74 @@ def limiting_A(r):
     "Calculate limiting adaptive ratio A given signa-to-noise ratio r"    
     
     return r/2.0*(np.sqrt(1+4/np.float(r))-1)
+
+def compute_A_factor(R, F, Q):
+    
+    """
+    A = RF^TQ^-1"""
+    
+    try:
+        X = solve(Q, F, sym_pos=True, check_finite=False)    ##X = F^t*Q^-1. Notice that Q is symmetric and positive-definite. Uses posv function from LAPACK
+#         X = solve(Q, F, check_finite=False)   
+    except LinAlgError:
+        print("F", F)
+        print("Matrix Q", Q)
+        raise LinAlgError
+    
+    X = X.T    ##Result from solve is X transposed! Untranspose X
+    A = np.dot(R, X)    ##Adjustment Factor
+    
+    return A    ##This makes an external copy of A?
+
+
+def log_likelihood(Y,ff,QQ):
+    
+    """
+    Y - Numpy array of observations, T x n, in which T is the number
+        of observations and n is the dimension of the observation vector
+    """
+    
+    T = Y.shape[0]    ##Number of observations
+    
+    
+    ##Log-likelihood value
+    L = 0
+    
+    for t in range(T):
+        
+        y = Y[t]
+        f = ff[t]
+        Q = QQ[t]
+        
+        ##CALCULATE LOG-LIKELIHOOD AT TIME t
+        
+        ##First term of likelihood function
+        sign, value = slogdet(Q)
+        logdet = sign*value
+        
+        ##Deviation term (observed - predicted)
+        e = y-f
+        ##Calculate the quadratic term
+        try:
+            quad = np.dot(e, solve(Q, e, sym_pos=True, check_finite=False))
+        except LinAlgError:
+            
+            print("\nResort to pseudo-inverse")
+            
+            pinv = np.linalg.pinv(Q)
+            quad = np.dot(e, np.dot(pinv, e))
+            
+            singular_values = np.linalg.svd(Q,compute_uv=False)
+            tol = singular_values.max()*np.finfo(np.float).eps*y.size    ##Tolerance for singular values
+            pseudo_det = singular_values[singular_values>tol].prod()
+            logdet = np.log(pseudo_det)
+            
+        ##Return likelihood for time t
+        L = L-0.5*logdet-0.5*quad
+        
+    return L
+    
+    
 
 
 def bayesian_smoother(G, m, C, m_bar, C_bar):
@@ -947,7 +1017,7 @@ class harmonic_dlm:
     Defines a first order DLM with harmonics evolving over time.
     
     This a DLM with two main components:
-        - The level of the time series.
+        - The level and trend of the time series.
         - A vector of h harmonic components evolving over time.
     """
     
@@ -1129,6 +1199,635 @@ class harmonic_dlm:
         return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
         
         
+class dynamic_harmonic_dlm:
     
+    """
+    Defines a DLM with harmonics whose period T
+    is dynamic and so evolves over time.
+    
+    This a DLM with two main components:
+        - The level and trend of the time series.
+        - A vector of h harmonic components evolving over time.
+    """
+    
+    def __init__(self,m0,C0,n0,S0,h=1,d1=0.99,d2=0.99):
+        
+        """
+        m0 - Initial prior mean vector of parameters
+        C0 - Initial prior covariance matrix of parameters
+        n0 - Initial estimate of the degrees of freedom
+        S0 - Initial estimate of observation variance V
+        h - Number of harmonic terms
+        d1 - Discount factor used in determining the a priori variance R
+             relative to the level of the time series. Typical values between 0.8 and 1.0
+        d2 - Discount factor relative to the harmonics component.
+            
+        """
+        
+        self.m = m0
+        self.C = C0
+        self.n = n0
+        self.S = S0
+        self.d1 = d1
+        self.d2 = d2
+        ##self.T = T
+        self.h = h
+        
+        
+        
+        ##Mount regression vector
+        ##This vector has
+        ##2 components corresponding to the local
+        ##level and linear trend
+        ##2 components for each harmonic
+        ##corresponding to the main harmonic and its conjugate
+        ##Only the main harmonic is used in the regression vector
+        ##This amounts to 2h terms
+        
+        F_size = 3+2*self.h
+        
+        F = np.zeros(F_size)
+        F[0] = 1    ##Local level term
+        F[1] = 0    ##Linear trend term
+        F[2] = 0    ##Period term
+        
+        for j in range(3, F_size-1, 2):
+        ##We step 2 by 2
+            
+            F[j] = 1    ##Main harmonic
+            F[j+1] = 0  ##Conjugate harmonic
+            
+        ##print("Vetor de regressão = ", F)
+        
+        self.F = F
+        
+    def mount_system_matrix(self):
+        
+        """
+        We need this since system matrix G_t is dynamic,
+        so it has to be computed at each time step.
+        """
+        
+        ##MOUNT SYSTEM MATRIX
+        
+        ##Matrix of local level, trend and period terms
+        G1 = np.eye(3)    ##Identity matrix
+        G1[0,1] = 1
+        
+        ##Take current estimate of period
+        
+        T = self.m[2]   ##Notice that T is the third component of the parameter vector
+        
+        ##Correct for possibly negative periods:
+            
+        if T < 0:
+            T = 1
+        
+        ##Matrices corresponding to harmonics
+        H_matrices = []
+        
+        for j in range(1,self.h+1):
+        
+            omega = 2*np.pi/T*j    ##Angular frequencies
+            
+            H = np.eye(2)
+            H[0,0] = np.cos(omega)
+            H[0,1] = np.sin(omega)
+            H[1,0] = -np.sin(omega)
+            H[1,1] = np.cos(omega)
+            
+            H_matrices.append(H)
+            
+        H = block_diag(*H_matrices)
+        
+        ##Glue matrices G1 and H together as a single
+        ##block diagonal matrix:
+            
+        G = block_diag(G1,H)
+        
+        ##print("Matriz G = ", G)
+        
+        return G
+        
+    def predict_state(self):
+        
+        """Generate the prior distribution of the state at next time.
+           Notice that the regression vector F uses a Fourier basis
+           Inputs:
+               n: Number of degrees of freedom
+               S: Current estimate of observational variance
+               T: Length of period in time series
+               t: Current time"""
+               
+        ##Parameters of prior distribution at time t
+        ##(Prediction distribution of the state/parameters vectors)
+        
+        G = self.mount_system_matrix()
+        
+        a = np.dot(G, self.m)
+        
+        ##Compute R matrix at time t (covariance matrix of prior distribution at time t)
+        
+        ##Compute P matrix (Covariance o r.v. G * \theta)
+        P = np.dot(G, np.dot(self.C, G.T))
+        
+        ##Extract blocks of P corresponding to trend and periodic components
+        ##P1 = P[0,0]*np.eye(1)  ##Notice this is a 1 x 1 matrix, not a scalar
+        P1 = P[0:3,0:3]    ##Level, trend and period components
+        P2 = P[3:,3:]      ##Periodic/Harmonic components
+        
+        ##Updates R matrices for components with different discount factors
+        R1 = 1/self.d1*P1    ##Level and trend components
+        R2 = 1/self.d2*P2    ##Periodic/Harmonic components
+        
+        ##R is equal P except for the updated blocks R1 and R2
+        R = P   ##Notice that R is the same object in memory as P
+        
+        ##Correct R with the updated R1 and R2 components
+        
+        R[0:3,0:3] = R1
+        R[3:,3:] = R2
+        
+        return a, R
+    
+    def predict_observation(self, a, R, F):
+        
+        ##One-step forecast distribution
+        f = np.dot(F, a)
+        Q = np.dot(F, np.dot(R,F))+self.S
+        
+        
+        return f,Q
+    
+    
+    def update_state(self,y,F,a,R,f,Q):
+        
+        ##Update observational variance parameters
+        
+        A = (1/Q)*np.dot(R,F)    ##Adjustment factor (Kalman gain)
+        e = y-f                  ##Observational error (This is a scalar)
+        self.n = self.n+1
+        S_new = self.S+self.S/self.n*(e**2/Q-1)
+        self.m = a+e*A    ##Posterior mean
+        self.C = S_new/self.S*(R-Q*np.outer(A,A))   ##Posterior covariance matrix
+        self.S = S_new
+        
+        
+    def apply_DLM(self, Y):
+        
+        
+        mm = []   ##Save all estimates of systemic mean
+        CC = []   ##Save all estimates of the systemic variance
+        SS = []   ##Save all estimates of the observation variance
+        ff = []   ##Save all forecasts
+        QQ = []   ##Save all forecast variances
+        
+        for t in range(Y.size):
+            
+            ##print("Period at time = "+str(t)+"=", self.m[2])
+            
+            print(self.m)
+            
+            a,R = self.predict_state()
+            
+            F = self.F
+            
+            f,Q = self.predict_observation(a,R,F)
+            
+            ##Take current observation at time t
+            y = Y[t]
+            
+            self.update_state(y,F,a,R,f,Q)
+            
+            
+            ##Save statistics
+            mm.append(self.m)
+            
+            CC.append(self.C)
+            ff.append(f)
+            QQ.append(Q)
+            SS.append(self.S)
+            
+        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
+        
+    
+    
+class tvar_dlm:
+    
+    """
+    Defines a time-varying autoregressive dlm.
+    """
+    
+    def __init__(self,m0,C0,n0,S0,F0,p,d1=0.99):
+        
+        """
+        m0 - Initial prior mean level
+        C0 - Initial prior level variance
+        n0 - Initial estimate of the degrees of freedom
+        S0 - Initial estimate of observation variance V
+        F0 - Initial vector of p observations
+        p -  Order of the AR model
+        d1 - Discount factor used in determining the a priori variance R
+             relative to the level of the time series. Typical values between 0.8 and 1.0
+            
+        """
+        
+        ##State of the filter at any time t
+        
+        self.m = m0
+        self.C = C0
+        self.n = n0
+        self.p = p
+        self.S = S0
+        self.d1 = d1
+        self.F = F0
+        
+        ##SYSTEM MATRIX IS JUST AN p x p IDENTITY MATRIX
+        G = np.eye(p)
+        self.G = G
+        
+    def predict_state(self):
+        
+        """Generate the prior distribution of the state at next time.
+           Notice that the regression vector F uses a Fourier basis
+           Inputs:
+               n: Number of degrees of freedom
+               S: Current estimate of observational variance
+               T: Length of period in time series
+               t: Current time"""
+               
+        ##Parameters of prior distribution at time t
+        ##(Prediction distribution of the state/parameters vectors)
+        a = np.dot(self.G, self.m)
+        
+        ##Compute R matrix at time t (covariance matrix of prior distribution at time t)
+        
+        ##Compute P matrix (Covariance o r.v. G * \theta)
+        P = np.dot(self.G, np.dot(self.C, self.G.T))
+        
+        ##Updates R matrix
+        R = 1/self.d1*P    
+        
+        return a, R
+    
+    def predict_observation(self, a, R):
+        
+        ##One-step forecast distribution
+        F = self.F
+        f = np.dot(F, a)
+        Q = np.dot(F, np.dot(R,F))+self.S
+        
+        
+        return f,Q
+    
+    
+    def update_state(self,y,a,R,f,Q):
+        
+        ##Update observational variance parameters
+        
+        
+        A = (1/Q)*np.dot(R,self.F)    ##Adjustment factor (Kalman gain)
+        e = y-f                  ##Observational error (This is a scalar)
+        self.n = self.n+1
+        S_new = self.S+self.S/self.n*(e**2/Q-1)
+        self.m = a+e*A    ##Posterior mean
+        self.C = S_new/self.S*(R-Q*np.outer(A,A))   ##Posterior covariance matrix
+        self.S = S_new
+        
+        ##Update F vector (In AR model, F corresponds to the p prior observations of the time series)
+        
+        new_F = np.zeros_like(self.F)
+        new_F[0] = y
+        new_F[1:] = self.F[0:self.p-1]
+        self.F = new_F
+        
+        
+    def apply_DLM(self, Y):
+        
+        
+        mm = []   ##Save all estimates of systemic mean
+        CC = []   ##Save all estimates of the systemic variance
+        SS = []   ##Save all estimates of the observation variance
+        ff = []   ##Save all forecasts
+        QQ = []   ##Save all forecast variances
+        
+        for t in range(Y.size):
+            
+            a,R = self.predict_state()
+            
+            f,Q = self.predict_observation(a,R)
+            
+            ##Take current observation at time t
+            y = Y[t]
+            
+            self.update_state(y,a,R,f,Q)
+            
+            
+            ##Save statistics
+            mm.append(self.m)
+            CC.append(self.C)
+            ff.append(f)
+            QQ.append(Q)
+            SS.append(self.S)
+            
+        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
+    
+    
+class latent_AR_dlm:
+    
+    """
+    Defines a DLM with a latent autoregressive component.
+    """
+    
+    def __init__(self,m0,C0,n0,S0,p,phi,d1=0.99,d2=0.99):
+        
+        """
+        m0 - Initial prior mean level
+        C0 - Initial prior level variance
+        n0 - Initial estimate of the degrees of freedom
+        S0 - Initial estimate of observation variance V
+        p -  Order of the AR model
+        phi - a p-vector of AR parameters
+        d1 - Discount factor used in determining the a priori variance R
+             relative to the level of the time series. Typical values between 0.8 and 1.0
+        d2 - Discount factor used in determining the a priori variance R
+                  relative to the autoregressive latent component.
+            
+        """
+        
+        ##State of the filter at any time t
+        
+        self.m = m0
+        self.C = C0
+        self.n = n0
+        self.p = p
+        self.phi = phi
+        self.S = S0
+        self.d1 = d1
+        self.d2 = d2
+        
+        ##MOUNT SYSTEM MATRIX
+        
+        ##Matrix of local level and latent autoregressive terms
+        G = np.zeros((1+p,1+p))
+        G[0,0] = 1    ##Local level term
+        G[1,1:] = phi 
+        G[2:, 1:p] = np.eye(p-1)
+        
+        self.G = G
+        
+        F = np.zeros(1+p)   ##Level plus p AR terms
+        F[0] = F[1] = 1
+        
+        self.F = F
+        
+        
+    def predict_state(self):
+        
+        """Generate the prior distribution of the state at next time.
+           Notice that the regression vector F uses a Fourier basis
+           Inputs:
+               n: Number of degrees of freedom
+               S: Current estimate of observational variance
+               T: Length of period in time series
+               t: Current time"""
+               
+        ##Parameters of prior distribution at time t
+        ##(Prediction distribution of the state/parameters vectors)
+        a = np.dot(self.G, self.m)
+        
+        ##Compute R matrix at time t (covariance matrix of prior distribution at time t)
+        
+        ##Compute P matrix (Covariance o r.v. G * \theta)
+        P = np.dot(self.G, np.dot(self.C, self.G.T))
+        
+        P1 = P[0,0]        ##Level components
+        P2 = P[1:,1:]      ##AR components
+        
+        ##Updates R matrices for components with different discount factors
+        R1 = 1/self.d1*P1    ##Level and trend components
+        R2 = 1/self.d2*P2    ##Periodic/Harmonic components
+        
+        ##R is equal P except for the updated blocks R1 and R2
+        R = P   ##Notice that R is the same object in memory as P
+        
+        ##Correct R with the updated R1 and R2 components
+        
+        R[0,0] = R1
+        R[1:,1:] = R2
+        
+        return a, R
+    
+    def predict_observation(self, a, R):
+        
+        ##One-step forecast distribution
+        F = self.F
+        f = np.dot(F, a)
+        Q = np.dot(F, np.dot(R,F))+self.S
+        
+        
+        return f,Q
+    
+    
+    def update_state(self,y,a,R,f,Q):
+        
+        ##Update observational variance parameters
+        
+        
+        A = (1/Q)*np.dot(R,self.F)    ##Adjustment factor (Kalman gain)
+        e = y-f                  ##Observational error (This is a scalar)
+        self.n = self.n+1
+        S_new = self.S+self.S/self.n*(e**2/Q-1)
+        self.m = a+e*A    ##Posterior mean
+        self.C = S_new/self.S*(R-Q*np.outer(A,A))   ##Posterior covariance matrix
+        self.S = S_new
+        
+        
+    def apply_DLM(self, Y):
+        
+        
+        mm = []   ##Save all estimates of systemic mean
+        CC = []   ##Save all estimates of the systemic variance
+        SS = []   ##Save all estimates of the observation variance
+        ff = []   ##Save all forecasts
+        QQ = []   ##Save all forecast variances
+        
+        for t in range(Y.size):
+            
+            a,R = self.predict_state()
+            
+            f,Q = self.predict_observation(a,R)
+            
+            ##Take current observation at time t
+            y = Y[t]
+            
+            self.update_state(y,a,R,f,Q)
+            
+            
+            ##Save statistics
+            mm.append(self.m)
+            CC.append(self.C)
+            ff.append(f)
+            QQ.append(Q)
+            SS.append(self.S)
+            
+        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
+    
+    
+    
+class multivariate_dlm:
+    
+    """
+    Defines a general DLM. """
+    
+    def __init__(self,G,F,m0,C0,V,d=0.99):
+        
+        """
+        m0 - Initial prior mean level
+        C0 - Initial prior level variance
+        V - Observational covariance matrix
+        d - Discount factor used in determining the a priori variance R
+        """
+        
+        ##Save initial state of the DLM
+        self.m0 = m0    
+        self.C0 = C0
+        
+        ##Parameters
+        self.G = G
+        self.F = F
+        self.d = d
+        self.V = V
+        
+        ##Running state
+        self.m = m0
+        self.C = C0
+        
+        
+        
+    def predict_state(self):
+        
+        """Generate the prior distribution of the state at next time."""
+               
+        ##Parameters of prior distribution at time t
+        ##(Prediction distribution of the state/parameters vectors)
+        a = np.dot(self.G, self.m)
+        
+        ##Compute R matrix at time t (covariance matrix of prior distribution at time t)
+        
+        ##Compute P matrix (Covariance o r.v. G * \theta)
+        P = np.dot(self.G, np.dot(self.C, self.G.T))
+                
+        ##Updates R matrices for components with different discount factors
+        R = 1/self.d*P    ##Level and trend components
+        
+        return a, R
+    
+    def predict_observation(self, a, R):
+        
+        ##One-step forecast distribution
+        F = self.F
+        f = np.dot(F, a)
+        Q = np.dot(F, np.dot(R,F))+self.V
+        
+        
+        return f,Q
+    
+    
+    def update_state(self,y,a,R,f,Q):
+        
+        ##Update observational variance parameters 
+        A = compute_A_factor(R, self.F, Q)   ##Adjustment factor (Kalman gain)
+        ##A = np.dot(np.dot(R,self.F), np.linalg.inv(Q)) 
+        e = y-f
 
+        m = a+np.dot(A, e)    ##Posterior mean
+        
+        C = R - np.dot(A, np.dot(Q, A.T)) ##Posterior covariance matrix
+    #    I = eye(R.shape[0])    ##Identity matrix
+    #    C = dot(I-dot(A, F), R) ##Posterior covariance matrix (Alternative calculus, source: https://en.wikipedia.org/wiki/Kalman_filter#Overview_of_the_calculation)
+    
+        ##print("Shape C = ", C.shape)
+        
+        self.m = m
+        self.C = C    
+        
+        
+    def apply_DLM(self, Y):
+        
+        """
+        Apply DLM to data Y.
+        
+        Y: 
+        """
+        
+        
+        mm = []   ##Save all estimates of systemic mean
+        CC = []   ##Save all estimates of the systemic variance
+        ff = []   ##Save all forecasts
+        QQ = []   ##Save all forecast variances
+        
+        
+        
+        T = Y.shape[0]    ##Take total number of observations
+        
+        for t in range(T):
+            
+            a,R = self.predict_state()
+            
+            f,Q = self.predict_observation(a,R)
+            
+            ##Take current observation at time t
+            y = Y[t]
+            
+            self.update_state(y,a,R,f,Q)
+            
+            
+            ##Save statistics
+            mm.append(self.m)
+            CC.append(self.C)
+            ff.append(f)
+            QQ.append(Q)
+            
+            
+        ##return mm,CC,ff,QQ    
+        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ)
+    
+    def restart_dlm(self):
+        
+        ##Make running state equal to initial state
+        self.m = self.m0    #
+        self.C = self.C0
+        
+    
+    
+class random_walk_DLM(multivariate_dlm):
+       
+    def __init__(self,m0,C0,V,d=0.99):
+        
+        """
+        m0 - Initial prior mean level
+        C0 - Initial prior level variance
+        V - Observational covariance matrix
+        d - Discount factor used in determining the a priori variance R
+        """
+        
+        ##Mount G and F matrices
+        
+        ##Matrix of local level
+        n = len(m0)
+        G = np.eye(n)
+        
+        m = V.shape[0]
+        F = np.eye(m)
+        
+        
+        ##Initializes parent DLM
+        multivariate_dlm.__init__(self,G,F,m0,C0,V,d)
+        
+        
 
+       
+    
+    
+    
