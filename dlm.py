@@ -691,18 +691,20 @@ def multiprocess_dlm(Y, dlms):
         
         ##Renormalization
         ##(avoids probability to be exactly one or zero, which causes degeneration)
-        ##p[p>1.0-1e-9] = 1.0-1e-9
-        ##p[p<0.0+1e-9] = 0.0+1e-9
+        p[p>1.0-1e-12] = 1.0-1e-12
+        p[p<0.0+1e-12] = 0.0+1e-12
         
-        ##norm_const = (likelihoods*p).sum()
-        ##norm_const = np.dot(likelihoods, p)
+        norm_const = (likelihoods*p).sum()
+        norm_const = np.dot(likelihoods, p)
         
-        ##p = likelihoods*p/norm_const
+        p = likelihoods*p/norm_const
         
         
         probs.append(p)
         
-    return np.array(probs)
+    probs = np.array(probs)
+        
+    return probs
 
 
 def update_posterior_Fourier(y, m, C, G, W, n, S, t, T):
@@ -799,8 +801,8 @@ def compute_A_factor(R, F, Q):
     A = RF^TQ^-1"""
     
     try:
-        X = solve(Q, F, sym_pos=True, check_finite=False)    ##X = F^t*Q^-1. Notice that Q is symmetric and positive-definite. Uses posv function from LAPACK
-#         X = solve(Q, F, check_finite=False)   
+        #X = solve(Q, F, sym_pos=True, check_finite=False)    ##X = F^t*Q^-1. Notice that Q is symmetric and positive-definite. Uses posv function from LAPACK
+         X = solve(Q, F, check_finite=False)   
     except LinAlgError:
         print("F", F)
         print("Matrix Q", Q)
@@ -844,13 +846,13 @@ def log_likelihood(Y,ff,QQ):
             quad = np.dot(e, solve(Q, e, sym_pos=True, check_finite=False))
         except LinAlgError:
             
-            print("\nResort to pseudo-inverse")
+            ##print("\nResort to pseudo-inverse")
             
             pinv = np.linalg.pinv(Q)
             quad = np.dot(e, np.dot(pinv, e))
             
             singular_values = np.linalg.svd(Q,compute_uv=False)
-            tol = singular_values.max()*np.finfo(np.float).eps*y.size    ##Tolerance for singular values
+            tol = singular_values.max()*np.finfo(float).eps*y.size    ##Tolerance for singular values
             pseudo_det = singular_values[singular_values>tol].prod()
             logdet = np.log(pseudo_det)
             
@@ -1728,7 +1730,7 @@ class multivariate_dlm:
         ##One-step forecast distribution
         F = self.F
         f = np.dot(F, a)
-        Q = np.dot(F, np.dot(R,F))+self.V
+        Q = np.dot(F, np.dot(R,F.T))+self.V
         
         
         return f,Q
@@ -1806,6 +1808,12 @@ class random_walk_DLM(multivariate_dlm):
     def __init__(self,m0,C0,V,d=0.99):
         
         """
+        A simple multivariate random walk dynamic linear model.
+        
+        This DLM assums the time-varying mean vector \mu_t of the
+        multivariate time series evolves as a random walk. No other features,
+        such as trend or seasonality/periodicities are assumed.
+        
         m0 - Initial prior mean level
         C0 - Initial prior level variance
         V - Observational covariance matrix
@@ -1824,7 +1832,54 @@ class random_walk_DLM(multivariate_dlm):
         
         ##Initializes parent DLM
         multivariate_dlm.__init__(self,G,F,m0,C0,V,d)
+
+
+class trend_DLM(multivariate_dlm):
+       
+    def __init__(self,m0,C0,V,d=0.99):
         
+        """
+        
+        A multivariate dynamic linear model with a trend component/feature.
+        
+        This DLM assums the time-varying mean vector \mu_t of the
+        multivariate time series evolves as a random walk with
+        an additional trend feature.
+        
+        m0 - Initial prior mean level
+        C0 - Initial prior level variance
+        V - Observational covariance matrix
+        d - Discount factor used in determining the a priori variance R
+        """
+        
+        ##Mount G and F matrices
+        
+        n = len(m0)    ##Size of state vector
+        m = V.shape[0] ##Size of observation vector
+        
+        G_matrices = []
+        
+        for j in range(int(n/2)):
+            
+            G = np.eye(2)
+            ##Add the tren term to G:
+            G[0,1] = 1
+            
+            G_matrices.append(G)
+            
+        G = block_diag(*G_matrices)
+        
+        
+        ##Mount F matrix
+        F = np.zeros((m,n))
+        
+        for j in range(m):
+            F[j,2*j] = 1
+        
+        ##print("F = ", F)
+        
+        ##Initializes parent DLM
+        multivariate_dlm.__init__(self,G,F,m0,C0,V,d)
         
 
        
