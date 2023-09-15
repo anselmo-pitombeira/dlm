@@ -7,7 +7,7 @@ Created on Sat Sep 19 16:11:47 2015
 """
 
 import numpy as np
-from scipy.stats import norm, multivariate_normal     ##Normal pdf
+from scipy.stats import norm, multivariate_normal, multivariate_t
 from scipy.linalg import block_diag, solve, LinAlgError
 from numpy.linalg import slogdet
 
@@ -631,15 +631,7 @@ def multiprocess_dlm(Y, dlms):
     A multiprocess DLM which runs multiple dlms each time step
     for a given time series Y and computes the probabilities
     of each one.
-    
-    
-    The employd DLMs are second order polynomial dynamic linear model with
-    harmonic terms to
-    model periodic patterns.
         
-    This dlm assumes that the constant observation variance is not known
-    a priori, and updates an estimated St of it at each time t.
-    
     Y - Time series as a numpy array
     dlms - list of DLMs to be run
     """
@@ -689,23 +681,101 @@ def multiprocess_dlm(Y, dlms):
                 
         p = likelihoods*p/norm_const
         
-        ##Renormalization
-        ##(avoids probability to be exactly one or zero, which causes degeneration)
+        ##Avoids probability to be exactly one or zero, which causes degeneration
         p[p>1.0-1e-12] = 1.0-1e-12
         p[p<0.0+1e-12] = 0.0+1e-12
         
-        norm_const = (likelihoods*p).sum()
-        norm_const = np.dot(likelihoods, p)
+        ##Renormalize probabilities. This is necessary since
+        ##after the correction, the sum of probabilities will not be equals 1.
         
-        p = likelihoods*p/norm_const
+        ##Compute renormalization constant
+        re_norm_const = p.sum()
         
-        
+        ##Renormalize
+        p = p/re_norm_const
         probs.append(p)
         
     probs = np.array(probs)
         
     return probs
 
+
+def multiprocess_matrixvariate_dlm(Y, dlms):
+    
+    """
+    A multiprocess DLM which runs multiple dlms each time step
+    for a given time series Y and computes the probabilities
+    of each one.
+    
+    
+    The employd DLMs are matrixvariate dynamic linear model.
+        
+    
+    Y - Time series as a numpy array
+    dlms - list of DLMs to be run
+    """
+    
+    n = len(dlms)
+    
+    probs = []
+    
+    ##Initialize prior probabilities of DLMs
+    
+    p = np.ones(n)/n
+    
+    for t in range(Y.shape[0]):
+        
+        ##Take current observation
+        y = Y[t]
+        
+        ##Make y  a column vector   (so that the transpose operation can be used)
+        y = y.reshape(-1,1)
+        
+        likelihoods = []
+        
+        for dlm_model in dlms:
+            
+            a,R = dlm_model.predict_state()
+            
+            f,Q = dlm_model.predict_observation(a,R)
+            
+            ##Compute likelihood of dlm
+            
+            ##Notice that we turn y and f f into a (q,) shape array (requirement of the multivariate_t pdf)
+            likeli = multivariate_t.pdf(x=y.squeeze(), loc=f.squeeze(), shape=Q*dlm_model.S, df = dlm_model.n)
+            
+            likelihoods.append(likeli)
+            
+            dlm_model.update_state(y,a,R,f,Q)
+            
+        likelihoods = np.array(likelihoods)
+        
+        ##Update probability of each DLM
+        ##Notice the use of Bayes theorem
+        
+        ##Computer normalization constant
+        ##norm_const = (likelihoods*p).sum()
+        norm_const = np.dot(likelihoods, p)
+                
+        p = likelihoods*p/norm_const
+        
+        ##Avoids probability to be exactly one or zero, which causes degeneration
+        p[p>1.0-1e-12] = 1.0-1e-12
+        p[p<0.0+1e-12] = 0.0+1e-12
+        
+        ##Renormalize probabilities. This is necessary since
+        ##after the correction, the sum of probabilities will not be equals 1.
+        
+        ##Compute renormalization constant
+        re_norm_const = p.sum()
+        
+        ##Renormalize
+        p = p/re_norm_const
+        probs.append(p)
+        
+    probs = np.array(probs)
+        
+    return probs
 
 def update_posterior_Fourier(y, m, C, G, W, n, S, t, T):
     
@@ -860,10 +930,48 @@ def log_likelihood(Y,ff,QQ):
         L = L-0.5*logdet-0.5*quad
         
     return L
-    
-    
 
 
+def log_likelihood_matrixvariate_DLM(Y,ff,QQ,SS,n0,S0,d2):
+    
+    """
+    Computes log likelihood of the data for the matrixvariate DLM.
+    
+    The log likelihood is the sum of the logarithms of multivarite Student's t density.
+    
+    Y: Numpy array of observations, T x n, in which T is the number
+        of observations and n is the dimension of the observation vector
+    d2: Discount factor of covariance matrix of univariate DLMs. Required so that we can compute
+        the degrees of freedom of the multivariate t.
+    """
+    
+    T = Y.shape[0]    ##Number of observations
+    n = n0            ##Initial number of degrees of freedom
+    
+    ##Log-likelihood value
+    L = 0
+    
+    for t in range(T):
+        
+        y = Y[t]
+        f = ff[t]
+        Q = QQ[t]
+        
+        f = f.squeeze()   ##Turn f into a (q,) shape array
+         
+        if t == 0:
+            S = S0    ##We neeed this since SS[0] is the S value at time t = 1, and we need the value of S at the previous time t-1
+        else:
+            S = SS[t-1]
+        
+        ##Accumulate L
+        L += multivariate_t.logpdf(x=y, loc=f, shape=Q*S, df = n)
+            
+        ##Update degrees of freedom
+        n = d2*n+1
+        
+    return L
+    
 def bayesian_smoother(G, m, C, m_bar, C_bar):
     
     """Estimate the marginal conditional distributions \teta_{t-k} | D_t
@@ -1770,7 +1878,6 @@ class multivariate_dlm:
         QQ = []   ##Save all forecast variances
         
         
-        
         T = Y.shape[0]    ##Take total number of observations
         
         for t in range(T):
@@ -1800,9 +1907,168 @@ class multivariate_dlm:
         ##Make running state equal to initial state
         self.m = self.m0    #
         self.C = self.C0
+    
+
+class matrixvariate_dlm:
+    
+    """
+    Defines a matrix variate DLM. In this kind of DLM,
+    a q-dimensional multivariate vector y has
+    any of its components $y_j, j =1, ..., q$,
+    modeled as a univariate DLM with the same structure (same $F_t$ and $G_t$)
+    Each n-dimensional vector of parameters
+    $\theta_j, j =1, ... q$, is arranged as columns
+    of a n x q matriz $\Theta$. The n x q matrix $\Omega_t$
+    of evolution errors is assumed to follow a matrixnormal
+    probability density.
+    """
+    
+    def __init__(self,G,F,V,m0,C0,S0,n0,d1=0.99,d2=0.99):
         
+        """
+        n: Size of parameter vectors (same size for each univariate DLM)
+        q: Size of observation vector (number of univariate DLMs)
+        
+        Prior parameters
+            m0 - Initial prior mean matrix (q x n)
+            C0 - Initial prior variance matrix between components in a parameter vector (n x n)
+            S0 - Initial prior covariance matrix between the q univariate DLMs (q x q matrix)
+            n0 - Initial prior number of degrees of freedom in 
+        Structure parameters
+            F - Regression vector of each univariate DLM (n x 1)
+            G - System matrix of each DLM   (n x n)
+            V - Constant observational variance of each univariate DLM (scalar)
+            d - Discount factor used in determining the a priori variance matrix R
+        """
+        
+        ##Save initial state of the DLM
+        self.m0 = m0
+        self.C0 = C0
+        self.S0 = S0
+        self.n0 = n0
+        
+        ##Structural parameters
+        self.G = G
+        self.F = F.reshape(-1,1)    ##Make F a column vector
+        self.d1 = d1
+        self.d2 = d2
+        self.V = V
+        
+        ##State variables, initialized as provided initial prior values
+        #(notice that this is the estimated state at any time. Actual state is latent and inacessible)
+        self.m = m0
+        self.C = C0
+        self.S = S0
+        self.n = n0
+        
+    def predict_state(self):
+        
+        """Generate the prior distribution of the state at next time t"""
+               
+        ##Parameters of prior distribution at time t
+        ##(Prediction distribution of the state/parameters vectors)
+        a = np.dot(self.G, self.m)   ##Notice "a" is a n x q matrix
+        
+        ##Compute R matrix at time t (covariance matrix of prior distribution at time t)
+        
+        ##Compute P matrix (Covariance o r.v. G * \theta)
+        P = np.dot(self.G, np.dot(self.C, self.G.T))
+                
+        ##Update R matrix as P matrix inflated by the discount factor
+        R = 1/self.d1*P
+        
+        return a, R
+    
+    def predict_observation(self, a, R):
+        
+        ##One-step forecast distribution
+        F = self.F
+        f = np.dot(F.T, a)    ##F is a (n x 1) column vector. f is (1 x q) row vector
+        Q = np.dot(F.T, np.dot(R,F))+self.V ##Q is a scalar
+        
+        ##Make f a column vector
+        f = f.T
+        
+        return f,Q    ##    
     
     
+    def update_state(self,y,a,R,f,Q):
+        
+        ##Compute error term
+        e = y-f
+        
+        ##Adjustment factor (Kalman gain), A is a n x 1 vector
+        A = np.dot(R,self.F)/Q
+        
+        ##Posterior mean. Notice A is n x 1 and e.T is a 1 x q vector, so that m is n x q
+        m = a+np.dot(A, e.T)       
+        
+        ##Posterior covariance matrix between components of parameter vector
+        C = R - np.dot(A,A.T)*Q
+        
+        new_n = self.d2*self.n+1
+        ##Update covariance matrix between univariate DLMs
+        S = new_n**(-1)*(self.d2*self.n*self.S+np.dot(e,e.T)/Q)
+        
+        ##Update degrees of freedom
+        n = new_n
+        
+        ##Save new state values
+        self.m = m
+        self.C = C
+        self.S = S
+        self.n = n
+        
+    def apply_DLM(self, Y):
+        
+        """
+        Apply DLM to data Y.
+        
+        Y: 
+        """
+        
+        
+        mm = []   ##Save all estimates of systemic mean
+        CC = []   ##Save all estimates of the systemic variance
+        ff = []   ##Save all forecasts
+        QQ = []   ##Save all forecast variances
+        SS = []   ##Save all covariance matrices
+        nn = []   ##Save all degrees of freedom
+           
+        T = Y.shape[0]    ##Take total number of observations
+        
+        for t in range(T):
+            
+            a,R = self.predict_state()
+            
+            f,Q = self.predict_observation(a,R)
+            
+            ##Take current observation at time t
+            y = Y[t]
+            
+            ##Make y  a column vector   (so that the transpose operation can be used)
+            y = y.reshape(-1,1)
+            
+            self.update_state(y,a,R,f,Q)
+            
+            ##Save statistics
+            mm.append(self.m)
+            CC.append(self.C)
+            ff.append(f)
+            QQ.append(Q)
+            SS.append(self.S)
+            nn.append(self.n)
+            
+        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ),np.array(SS), np.array(nn)
+    
+    def restart_dlm(self):
+        
+        ##Make running state equal to initial state
+        self.m = self.m0
+        self.C = self.C0
+        self.S = self.S0
+        self.n = self.n0
+        
 class random_walk_DLM(multivariate_dlm):
        
     def __init__(self,m0,C0,V,d=0.99):
@@ -1833,6 +2099,37 @@ class random_walk_DLM(multivariate_dlm):
         ##Initializes parent DLM
         multivariate_dlm.__init__(self,G,F,m0,C0,V,d)
 
+    
+class trend_matrixvariate_DLM(matrixvariate_dlm):
+       
+    def __init__(self,V,m0,C0,S0,n0,d1=0.99,d2=0.99):
+        
+        """
+        A second order matrix variate dynamic linear model.
+        
+        m0 - Initial prior mean 
+        C0 - Initial prior covariance matrix
+        V - Observational variance
+        d1- Discount factor to state parameters
+        d2 - Discount factor coupling covariance matrix
+        """
+        
+        ##Mount G and F matrices
+        
+        ##Second order DLM (2 state parameters: mean level and trend)
+        nn = 2                     ##Dimension of state vector
+        
+        ##System matrix for the second order DLM (a Jordan matrix with order 2)
+        G = np.eye(nn)
+        G[0,1] = 1
+        
+
+        ##Regression vector for the second order DLM (observation is equals to the mean level)
+        F = np.zeros(nn)
+        F[0] = 1
+        
+        ##Initializes parent DLM
+        matrixvariate_dlm.__init__(self,G,F,V,m0,C0,S0,n0,d1,d2)
 
 class trend_DLM(multivariate_dlm):
        
