@@ -742,7 +742,9 @@ def multiprocess_matrixvariate_dlm(Y, dlms):
             ##Compute likelihood of dlm
             
             ##Notice that we turn y and f f into a (q,) shape array (requirement of the multivariate_t pdf)
-            likeli = multivariate_t.pdf(x=y.squeeze(), loc=f.squeeze(), shape=Q*dlm_model.S, df = dlm_model.n)
+            ##likeli = multivariate_t.pdf(x=y.squeeze(), loc=f.squeeze(), shape=Q*dlm_model.S, df = dlm_model.n)
+               
+            likeli = multivariate_t.pdf(x=y.squeeze(), loc=f.squeeze(), shape=Q*dlm_model.S, df = dlm_model.h)
             
             likelihoods.append(likeli)
             
@@ -750,11 +752,15 @@ def multiprocess_matrixvariate_dlm(Y, dlms):
             
         likelihoods = np.array(likelihoods)
         
+        ##norm_const = (likelihoods).sum()
+        ##p = likelihoods/norm_const
+        ##probs.append(p)
+   
+        
         ##Update probability of each DLM
         ##Notice the use of Bayes theorem
         
-        ##Computer normalization constant
-        ##norm_const = (likelihoods*p).sum()
+        ##Compute normalization constant
         norm_const = np.dot(likelihoods, p)
                 
         p = likelihoods*p/norm_const
@@ -932,7 +938,7 @@ def log_likelihood(Y,ff,QQ):
     return L
 
 
-def log_likelihood_matrixvariate_DLM(Y,ff,QQ,SS,n0,S0,d2):
+def log_likelihood_matrixvariate_DLM(Y,ff,QQ,DD,hh,D0,h0):
     
     """
     Computes log likelihood of the data for the matrixvariate DLM.
@@ -941,12 +947,9 @@ def log_likelihood_matrixvariate_DLM(Y,ff,QQ,SS,n0,S0,d2):
     
     Y: Numpy array of observations, T x n, in which T is the number
         of observations and n is the dimension of the observation vector
-    d2: Discount factor of covariance matrix of univariate DLMs. Required so that we can compute
-        the degrees of freedom of the multivariate t.
     """
     
     T = Y.shape[0]    ##Number of observations
-    n = n0            ##Initial number of degrees of freedom
     
     ##Log-likelihood value
     L = 0
@@ -960,15 +963,18 @@ def log_likelihood_matrixvariate_DLM(Y,ff,QQ,SS,n0,S0,d2):
         f = f.squeeze()   ##Turn f into a (q,) shape array
          
         if t == 0:
-            S = S0    ##We neeed this since SS[0] is the S value at time t = 1, and we need the value of S at the previous time t-1
+            D = D0    ##We neeed this since DD[0] is the D value at time t = 1, and we need the prior value of D at time t = 0 (this is, after the first update)
+            h = h0    ##The same with hh, hh[0] is the value at time t = 1 (this is, after the first update)
         else:
-            S = SS[t-1]
+            D = DD[t-1]    ##Notice that we take the prior parameters before update, and these are from time t-1
+            h = hh[t-1]
+        
+        ##Compute estimate of \Sigma covariance matrix (mean value of inverse Wishart distribution)
+        S = D/h
         
         ##Accumulate L
-        L += multivariate_t.logpdf(x=y, loc=f, shape=Q*S, df = n)
+        L += multivariate_t.logpdf(x=y, loc=f, shape=Q*S, df = h)
             
-        ##Update degrees of freedom
-        n = d2*n+1
         
     return L
     
@@ -1813,8 +1819,7 @@ class multivariate_dlm:
         self.m = m0
         self.C = C0
         
-        
-        
+    
     def predict_state(self):
         
         """Generate the prior distribution of the state at next time."""
@@ -1923,17 +1928,17 @@ class matrixvariate_dlm:
     probability density.
     """
     
-    def __init__(self,G,F,V,m0,C0,S0,n0,d1=0.99,d2=0.99):
+    def __init__(self,G,F,V,m0,C0,D0,h0,delta=0.99,lambd=0.99, fix_sigma=False):
         
         """
         n: Size of parameter vectors (same size for each univariate DLM)
         q: Size of observation vector (number of univariate DLMs)
         
         Prior parameters
-            m0 - Initial prior mean matrix (q x n)
-            C0 - Initial prior variance matrix between components in a parameter vector (n x n)
-            S0 - Initial prior covariance matrix between the q univariate DLMs (q x q matrix)
-            n0 - Initial prior number of degrees of freedom in 
+            m0 - Initial prior mean matrix of the state matrix \Omega_t
+            C0 - Initial prior covariance matrix of the state columns of state matrix \Omega_t
+            D0 - Initial prior scale matrix of Wishart distribution for the inverse covariance matrix \Sigma
+            h0 - Initial prior number of degrees of freedom in the Wishart distribution for the inverse covariance matrix \Sigma
         Structure parameters
             F - Regression vector of each univariate DLM (n x 1)
             G - System matrix of each DLM   (n x n)
@@ -1944,26 +1949,31 @@ class matrixvariate_dlm:
         ##Save initial state of the DLM
         self.m0 = m0
         self.C0 = C0
-        self.S0 = S0
-        self.n0 = n0
+        self.D0 = D0
+        self.h0 = h0
+        self.fix_sigma = fix_sigma
         
         ##Structural parameters
         self.G = G
         self.F = F.reshape(-1,1)    ##Make F a column vector
-        self.d1 = d1
-        self.d2 = d2
+        self.delta = delta
+        self.lambd = lambd
         self.V = V
         
         ##State variables, initialized as provided initial prior values
         #(notice that this is the estimated state at any time. Actual state is latent and inacessible)
         self.m = m0
         self.C = C0
-        self.S = S0
-        self.n = n0
+        self.D = D0
+        self.h = h0
+        self.S = self.D/self.h
+        
+        #if fix_sigma == True:    ##Fix \Sigma covariance matrix
+        #    self.S = self.D/self.h
         
     def predict_state(self):
         
-        """Generate the prior distribution of the state at next time t"""
+        """Generate the prior distribution of the state matrix at next time t"""
                
         ##Parameters of prior distribution at time t
         ##(Prediction distribution of the state/parameters vectors)
@@ -1971,11 +1981,11 @@ class matrixvariate_dlm:
         
         ##Compute R matrix at time t (covariance matrix of prior distribution at time t)
         
-        ##Compute P matrix (Covariance o r.v. G * \theta)
+        ##Compute P matrix (Covariance og r.v. G * \theta)
         P = np.dot(self.G, np.dot(self.C, self.G.T))
                 
         ##Update R matrix as P matrix inflated by the discount factor
-        R = 1/self.d1*P
+        R = 1/self.delta*P
         
         return a, R
     
@@ -2006,18 +2016,23 @@ class matrixvariate_dlm:
         ##Posterior covariance matrix between components of parameter vector
         C = R - np.dot(A,A.T)*Q
         
-        new_n = self.d2*self.n+1
-        ##Update covariance matrix between univariate DLMs
-        S = new_n**(-1)*(self.d2*self.n*self.S+np.dot(e,e.T)/Q)
+        new_h = self.lambd*self.h+1
+        #new_n = self.d2*self.n+1
         
-        ##Update degrees of freedom
-        n = new_n
+        
+        ##Update parameters of Wishart distribution only if \Sigma is not fixed
+        if self.fix_sigma == False:
+            D = self.lambd*self.D+np.dot(e,e.T)/Q    ##Update scale matrix D_t of inverse Wishart distribution
+            h = new_h    ##Update degrees of freedom
         
         ##Save new state values
         self.m = m
         self.C = C
-        self.S = S
-        self.n = n
+        
+        if self.fix_sigma == False:
+            self.D = D
+            self.h = h
+            self.S = self.D/self.h
         
     def apply_DLM(self, Y):
         
@@ -2032,8 +2047,10 @@ class matrixvariate_dlm:
         CC = []   ##Save all estimates of the systemic variance
         ff = []   ##Save all forecasts
         QQ = []   ##Save all forecast variances
-        SS = []   ##Save all covariance matrices
-        nn = []   ##Save all degrees of freedom
+        ##SS = []   ##Save all covariance matrices
+        ##nn = []   ##Save all degrees of freedom
+        DD = []   ##Save all scale matrices
+        hh = []   ##Save all degrees of freedom
            
         T = Y.shape[0]    ##Take total number of observations
         
@@ -2056,18 +2073,20 @@ class matrixvariate_dlm:
             CC.append(self.C)
             ff.append(f)
             QQ.append(Q)
-            SS.append(self.S)
-            nn.append(self.n)
+            DD.append(self.D)
+            hh.append(self.h)
             
-        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ),np.array(SS), np.array(nn)
+        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ),np.array(DD), np.array(hh)
     
     def restart_dlm(self):
         
         ##Make running state equal to initial state
         self.m = self.m0
         self.C = self.C0
-        self.S = self.S0
-        self.n = self.n0
+        ##self.S = self.S0
+        ##self.n = self.n0
+        self.D = self.D0
+        self.h = self.h0
         
 class random_walk_DLM(multivariate_dlm):
        
@@ -2102,7 +2121,7 @@ class random_walk_DLM(multivariate_dlm):
     
 class trend_matrixvariate_DLM(matrixvariate_dlm):
        
-    def __init__(self,V,m0,C0,S0,n0,d1=0.99,d2=0.99):
+    def __init__(self,V,m0,C0,D0,h0,delta=0.99,lambd=0.99,fix_sigma=False):
         
         """
         A second order matrix variate dynamic linear model.
@@ -2110,8 +2129,8 @@ class trend_matrixvariate_DLM(matrixvariate_dlm):
         m0 - Initial prior mean 
         C0 - Initial prior covariance matrix
         V - Observational variance
-        d1- Discount factor to state parameters
-        d2 - Discount factor coupling covariance matrix
+        delta- Discount factor to state parameters
+        lambd - Discount factor coupling covariance matrix
         """
         
         ##Mount G and F matrices
@@ -2129,7 +2148,7 @@ class trend_matrixvariate_DLM(matrixvariate_dlm):
         F[0] = 1
         
         ##Initializes parent DLM
-        matrixvariate_dlm.__init__(self,G,F,V,m0,C0,S0,n0,d1,d2)
+        matrixvariate_dlm.__init__(self,G,F,V,m0,C0,D0,h0,delta,lambd, fix_sigma=fix_sigma)
 
 class trend_DLM(multivariate_dlm):
        
