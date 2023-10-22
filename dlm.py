@@ -10,7 +10,10 @@ import numpy as np
 from scipy.stats import norm, multivariate_normal, multivariate_t
 from scipy.stats import t as t_student
 from scipy.linalg import block_diag, solve, LinAlgError
+import scipy.linalg as lin
 from numpy.linalg import slogdet
+import numba as nb
+from numba.experimental import jitclass
 
 def first_order_constant(Y, m0, C0, W, V, d = None):
     
@@ -905,7 +908,22 @@ def bayesian_smoother(G, m, C, m_bar, C_bar):
         
     return m_bar_k, C_bar_k
 
-        
+
+spec = [
+
+('m', nb.float32[:]),
+('C', nb.float32[:,:]),
+('n', nb.int32),
+('S',nb.int32),
+('d1', nb.int32),
+('d2', nb.int32),
+('T', nb.int32),
+('h', nb.int32),
+('G', nb.float32[:,:]),
+('F', nb.float32[:]),
+]
+
+@jitclass(spec)
 class Fourier_dlm:
     
     """
@@ -943,7 +961,7 @@ class Fourier_dlm:
         ##MOUNT SYSTEM MATRIX
         
         ##Matrix of local level and trend terms
-        G1 = np.zeros((2,2))
+        G1 = np.zeros((2,2),dtype=np.float32)
         G1[0,0] = G1[0,1] = G1[1,1] = 1
         ##G1 = np.eye(1)
         ##G1[0,1] = 1
@@ -963,12 +981,12 @@ class Fourier_dlm:
             
             H_matrices.append(H)
             
-        H = block_diag(*H_matrices)
+        H = lin.block_diag(*H_matrices)
         
         ##Glue matrices G1 and H together as a single
         ##block diagonal matrix:
             
-        G = block_diag(G1,H)
+        G = lin.block_diag(G1,H)
         
         #print("Matriz G = ", G)
         
@@ -985,7 +1003,7 @@ class Fourier_dlm:
         
         F_size = 2+2*self.h
         
-        F = np.zeros(F_size)
+        F = np.zeros(F_size,dtype=np.float32)
         F[0] = 1    ##Local level term
         F[1] = 0    ##Linear trend term
         
