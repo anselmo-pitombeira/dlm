@@ -911,16 +911,16 @@ def bayesian_smoother(G, m, C, m_bar, C_bar):
 
 spec = [
 
-('m', nb.float32[:]),
-('C', nb.float32[:,:]),
-('n', nb.int32),
-('S',nb.int32),
-('d1', nb.int32),
-('d2', nb.int32),
-('T', nb.int32),
-('h', nb.int32),
-('G', nb.float32[:,:]),
-('F', nb.float32[:]),
+('m', nb.float64[:]),
+('C', nb.float64[:,:]),
+('n', nb.int64),
+('S', nb.float64),
+('d1', nb.float64),
+('d2', nb.float64),
+('T', nb.int64),
+('h', nb.int64),
+('G', nb.float64[:,:]),
+('F', nb.float64[:]),
 ]
 
 @jitclass(spec)
@@ -961,7 +961,7 @@ class Fourier_dlm:
         ##MOUNT SYSTEM MATRIX
         
         ##Matrix of local level and trend terms
-        G1 = np.zeros((2,2),dtype=np.float32)
+        G1 = np.zeros((2,2))
         G1[0,0] = G1[0,1] = G1[1,1] = 1
         ##G1 = np.eye(1)
         ##G1[0,1] = 1
@@ -981,12 +981,15 @@ class Fourier_dlm:
             
             H_matrices.append(H)
             
-        H = lin.block_diag(*H_matrices)
+        ##H = lin.block_diag(*H_matrices)
+        
+        H = matriz_bloco_diagonal(H_matrices)
         
         ##Glue matrices G1 and H together as a single
         ##block diagonal matrix:
             
-        G = lin.block_diag(G1,H)
+        #G = lin.block_diag(G1,H)
+        G = matriz_bloco_diagonal([G1,H])
         
         #print("Matriz G = ", G)
         
@@ -1003,7 +1006,7 @@ class Fourier_dlm:
         
         F_size = 2+2*self.h
         
-        F = np.zeros(F_size,dtype=np.float32)
+        F = np.zeros(F_size)
         F[0] = 1    ##Local level term
         F[1] = 0    ##Linear trend term
         
@@ -2115,3 +2118,30 @@ class mixture_Fourier_DLM:
         mixture_forecasts_all_t = np.array(mixture_forecasts_all_t)
         
         return probs, mixture_forecasts_all_t
+        
+        
+@nb.njit
+def matriz_bloco_diagonal(matrizes):
+    if len(matrizes) == 0:
+        raise ValueError("A lista de matrizes não pode estar vazia")
+
+    num_blocos = len(matrizes)
+
+    # Calcule o tamanho total da matriz bloco diagonal
+    tamanho_bloco = [matriz.shape[0] for matriz in matrizes]
+    tamanho_matriz = sum(tamanho_bloco)
+
+    # Inicialize a matriz bloco diagonal com zeros
+    matriz_bloco = np.zeros((tamanho_matriz, tamanho_matriz))
+
+    # Preencha os blocos diagonais com as matrizes
+    start_row = 0
+    start_col = 0
+    for matriz in matrizes:
+        end_row = start_row + matriz.shape[0]
+        end_col = start_col + matriz.shape[1]
+        matriz_bloco[start_row:end_row, start_col:end_col] = matriz
+        start_row = end_row
+        start_col = end_col
+
+    return matriz_bloco
