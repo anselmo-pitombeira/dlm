@@ -923,7 +923,7 @@ spec = [
 ('F', nb.float64[:]),
 ]
 
-@jitclass(spec)
+#@jitclass(spec)
 class Fourier_dlm:
     
     """
@@ -981,15 +981,15 @@ class Fourier_dlm:
             
             H_matrices.append(H)
             
-        ##H = lin.block_diag(*H_matrices)
+        H = lin.block_diag(*H_matrices)
         
-        H = matriz_bloco_diagonal(H_matrices)
+        #H = matriz_bloco_diagonal(H_matrices)
         
         ##Glue matrices G1 and H together as a single
         ##block diagonal matrix:
             
-        #G = lin.block_diag(G1,H)
-        G = matriz_bloco_diagonal([G1,H])
+        G = lin.block_diag(G1,H)
+        #G = matriz_bloco_diagonal([G1,H])
         
         #print("Matriz G = ", G)
         
