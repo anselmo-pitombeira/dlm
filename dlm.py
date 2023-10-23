@@ -1949,6 +1949,7 @@ class trend_matrixvariate_DLM(matrixvariate_dlm):
         ##Initializes parent DLM
         matrixvariate_dlm.__init__(self,G,F,V,m0,C0,D0,h0,delta,lambd, fix_sigma=fix_sigma)
 
+
 class trend_DLM(multivariate_dlm):
        
     def __init__(self,m0,C0,V,d=0.99):
@@ -2011,7 +2012,7 @@ class mixture_Fourier_DLM:
     dlms - list of DLMs to be run
     """
 
-    def __init__(self, m0,C0,n0,S0,T_min, T_max,n = 100,h=1,d1=0.99,d2=0.99):
+    def __init__(self, m0,C0,n0,S0,T_min,T_max,n = 10,h=2,d1=0.99,d2=0.995):
 
         """
         n: Number of DLMs in the mixture.
@@ -2028,20 +2029,102 @@ class mixture_Fourier_DLM:
         
         ##Partition the interval of periods in n points
         self.Ts = np.linspace(T_min,T_max,n)
-        print("Ts = ", self.Ts)
         
+        ##Container for component DLMs
         self.dlms = []
+        
+        ##Probability state of the mixture DLM. All DLMs equally probable at the start
+        self.p = np.ones(n)/n
         
         for i in range(n):
         
             T = self.Ts[i]  
             dlm_model = Fourier_dlm(m0,C0,n0,S0,T,h,d1,d2)
             self.dlms.append(dlm_model)
-        
     
+    def one_step_forecast(self):
+    
+        """
+        Produce a forecast from the current states of the component DLMs.
+        """
+        
+        forecasts = np.empty(len(self.dlms))
+        q_variances = np.empty(len(self.dlms))
+        
+        ##Predict state and forecast for each component dlm
+        for i, dlm_model in enumerate(self.dlms):
+        
+            a,R = dlm_model.predict_state()
+            f,Q = dlm_model.predict_observation(a,R,dlm_model.F)
+            
+            ##Save forecast
+            forecasts[i] = f
+            q_variances[i] = Q
+            
+        ##Compute mixed forecast and variances
+        mix_forecast = np.dot(forecasts, self.p)
+        mix_variance = np.dot(q_variances, self.p)
+        
+        return mix_forecast, mix_variance
+        
+        
+    def update_state(self, y):
+    
+        """
+        Update state of the mixture model given an observation y.
+        """
+        
+        ##Container for likelihoods of each DLM
+        likelihoods = np.empty(len(self.dlms))
+                
+        for i,dlm_model in enumerate(self.dlms):
+                          
+            a,R = dlm_model.predict_state()
+            f,Q = dlm_model.predict_observation(a,R,dlm_model.F)
+            
+            ##Update state of component model
+            dlm_model.update_state(y,dlm_model.F,a,R,f,Q)
+            
+            ##Compute likelihood of dlm
+            likeli = t_student.pdf(y,df=dlm_model.n,loc=f, scale=Q)
+            ##Save likelihood
+            likelihoods[i] = likeli
+             
+        ##Update probability of each DLM
+        ##Notice the use of Bayes theorem
+        
+        ##Take current probabilities od each dlm
+        p = self.p
+        
+        ##Compute normalization constant
+        norm_const = np.dot(likelihoods, p)
+        
+        ##Compute posterior probability
+        p = likelihoods*p/norm_const
+        
+        ##Avoids probability to be exactly one or zero, which causes degeneration
+        p[p>1.0-1e-12] = 1.0-1e-12
+        p[p<0.0+1e-12] = 0.0+1e-12
+        
+        ##Renormalize probabilities. This is necessary since
+        ##after the correction, the sum of probabilities will not be equals 1.
+        
+        ##Compute renormalization constant
+        re_norm_const = p.sum()
+        
+        ##Renormalize
+        p = p/re_norm_const
+        
+        ##Update mixture model state
+        self.p = p
+        
+        return p
+        
+        
     def apply(self, Y):
     
         """
+        Apply the mixture model to a given time series.
         Y: Time series
         """
     
