@@ -8,12 +8,17 @@ Created on Sat Sep 19 16:11:47 2015
 
 import numpy as np
 from scipy.stats import norm, multivariate_normal, multivariate_t
-from scipy.stats import t as t_student
+import scipy.stats as st
+#from scipy.stats import t as t_student
+from numba_stats import t as t_student
 from scipy.linalg import block_diag, solve, LinAlgError
 import scipy.linalg as lin
 from numpy.linalg import slogdet
 import numba as nb
+from numba.typed import List
+from numba.types import ListType
 from numba.experimental import jitclass
+from math import gamma
 
 def first_order_constant(Y, m0, C0, W, V, d = None):
     
@@ -909,21 +914,35 @@ def bayesian_smoother(G, m, C, m_bar, C_bar):
     return m_bar_k, C_bar_k
 
 
-spec = [
+#spec1 = [
 
-('m', nb.float64[:]),
-('C', nb.float64[:,:]),
+#('m', nb.float64[:]),
+#('C', nb.float64[:,:]),
+#('n', nb.int64),
+#('S', nb.float64),
+#('d1', nb.float64),
+#('d2', nb.float64),
+#('T', nb.int64),
+#('h', nb.int64),
+#('G', nb.float64[:,:]),
+#('F', nb.float64[:]),
+#]
+
+spec1 = [
+
+('m', nb.float64[::1]),  ## "::1" Declare arrays as C arrays
+('C', nb.float64[:,::1]),
 ('n', nb.int64),
 ('S', nb.float64),
 ('d1', nb.float64),
 ('d2', nb.float64),
 ('T', nb.int64),
 ('h', nb.int64),
-('G', nb.float64[:,:]),
-('F', nb.float64[:]),
+('G', nb.float64[:,::1]),
+('F', nb.float64[::1]),
 ]
 
-#@jitclass(spec)
+@jitclass(spec1)
 class Fourier_dlm:
     
     """
@@ -981,15 +1000,15 @@ class Fourier_dlm:
             
             H_matrices.append(H)
             
-        H = lin.block_diag(*H_matrices)
+        #H = lin.block_diag(*H_matrices)
         
-        #H = matriz_bloco_diagonal(H_matrices)
+        H = matriz_bloco_diagonal(H_matrices)
         
         ##Glue matrices G1 and H together as a single
         ##block diagonal matrix:
             
-        G = lin.block_diag(G1,H)
-        #G = matriz_bloco_diagonal([G1,H])
+        #G = lin.block_diag(G1,H)
+        G = matriz_bloco_diagonal([G1,H])
         
         #print("Matriz G = ", G)
         
@@ -1996,9 +2015,26 @@ class trend_DLM(multivariate_dlm):
         
         ##Initializes parent DLM
         multivariate_dlm.__init__(self,G,F,m0,C0,V,d)
-        
 
-       
+
+#list_instance = nb.typed.List()
+#list_instance.append(Fourier_dlm(m0=np.zeros(10), C0=np.zeros((10,10)),n0=1,S0=1.0,T=1.0,h=1))
+
+#spec2 = [
+
+#    ('Ts', nb.float64[:]),
+#    ('dlms', nb.typeof(list_instance)),
+#    ('p', nb.float64[:])
+#]
+
+spec2 = [
+
+    ('Ts', nb.float64[::1]), ## "::1" Declare arrays as C arrays
+    ('dlms', ListType(Fourier_dlm.class_type.instance_type)),
+    ('p', nb.float64[::1])    ## "::1" Declare arrays as C arrays
+]
+
+#@jitclass(spec2)
 class mixture_Fourier_DLM:
 
     """
@@ -2031,16 +2067,28 @@ class mixture_Fourier_DLM:
         self.Ts = np.linspace(T_min,T_max,n)
         
         ##Container for component DLMs
-        self.dlms = []
+        ##self.dlms = []
+        #self.dlms = List.empty_list(Fourier_dlm)
+        
         
         ##Probability state of the mixture DLM. All DLMs equally probable at the start
         self.p = np.ones(n)/n
         
-        for i in range(n):
+
+        ##Populate container of dlms
+        ##T = self.Ts[0]
         
-            T = self.Ts[i]  
+        ##self.dlms = List([Fourier_dlm(m0,C0,n0,S0,T,h,d1,d2)])
+        
+        list_dlms = []
+        for i in range(0,n):
+        
+            T = self.Ts[i]
             dlm_model = Fourier_dlm(m0,C0,n0,S0,T,h,d1,d2)
-            self.dlms.append(dlm_model)
+            list_dlms.append(dlm_model)
+            
+        self.dlms = List(list_dlms)
+    
     
     def one_step_forecast(self):
     
@@ -2048,18 +2096,21 @@ class mixture_Fourier_DLM:
         Produce a forecast from the current states of the component DLMs.
         """
         
-        forecasts = np.empty(len(self.dlms))
-        q_variances = np.empty(len(self.dlms))
+        #forecasts = np.empty(len(self.dlms))
+        #q_variances = np.empty(len(self.dlms))
         
         ##Predict state and forecast for each component dlm
-        for i, dlm_model in enumerate(self.dlms):
+        #for i, dlm_model in enumerate(self.dlms):
         
-            a,R = dlm_model.predict_state()
-            f,Q = dlm_model.predict_observation(a,R,dlm_model.F)
+        #    a,R = dlm_model.predict_state()
+        #    f,Q = dlm_model.predict_observation(a,R,dlm_model.F)
             
             ##Save forecast
-            forecasts[i] = f
-            q_variances[i] = Q
+        #    forecasts[i] = f
+        #    q_variances[i] = Q
+        
+        forecasts, q_variances = compute_forecast(self.dlms)
+        
             
         ##Compute mixed forecast and variances
         mix_forecast = np.dot(forecasts, self.p)
@@ -2075,20 +2126,23 @@ class mixture_Fourier_DLM:
         """
         
         ##Container for likelihoods of each DLM
-        likelihoods = np.empty(len(self.dlms))
+        #likelihoods = np.empty(len(self.dlms))
                 
-        for i,dlm_model in enumerate(self.dlms):
+        #for i,dlm_model in enumerate(self.dlms):
                           
-            a,R = dlm_model.predict_state()
-            f,Q = dlm_model.predict_observation(a,R,dlm_model.F)
+        #    a,R = dlm_model.predict_state()
+        #    f,Q = dlm_model.predict_observation(a,R,dlm_model.F)
             
             ##Update state of component model
-            dlm_model.update_state(y,dlm_model.F,a,R,f,Q)
+        #    dlm_model.update_state(y,dlm_model.F,a,R,f,Q)
             
             ##Compute likelihood of dlm
-            likeli = t_student.pdf(y,df=dlm_model.n,loc=f, scale=Q)
+            #likeli = st.t.pdf(y,df=dlm_model.n,loc=f, scale=Q)
+        #    likeli = student_t_pdf(y,df=dlm_model.n,loc=f,scale=Q)
             ##Save likelihood
-            likelihoods[i] = likeli
+        #    likelihoods[i] = likeli
+        
+        likelihoods = compute_update_state(y,self.dlms)
              
         ##Update probability of each DLM
         ##Notice the use of Bayes theorem
@@ -2110,7 +2164,9 @@ class mixture_Fourier_DLM:
         ##after the correction, the sum of probabilities will not be equals 1.
         
         ##Compute renormalization constant
-        re_norm_const = p.sum()
+        re_norm_const = np.sum(p)
+        
+     
         
         ##Renormalize
         p = p/re_norm_const
@@ -2228,3 +2284,84 @@ def matriz_bloco_diagonal(matrizes):
         start_col = end_col
 
     return matriz_bloco
+    
+    
+@nb.njit
+def student_t_pdf(x, df, loc, scale):
+    """
+    Calcula a função densidade de probabilidade da distribuição t de Student com parâmetros de localização e escala.
+
+    Args:
+    x (float ou array-like): O valor ou valores para os quais calcular a PDF.
+    df (int): Graus de liberdade da distribuição t de Student.
+    mean (float): Parâmetro de localização (média).
+    scale (float): Parâmetro de escala (desvio padrão).
+
+    Returns:
+    float ou array-like: O valor da PDF da distribuição t de Student para x.
+    """
+    prefactor = gamma((df + 1) / 2) / (scale * np.sqrt(df * np.pi) * gamma(df / 2))
+    standardized_x = (x - loc) / scale
+    pdf = prefactor * (1 + (1 / df) * standardized_x ** 2) ** (-(df + 1) / 2)
+    return pdf
+    
+@nb.njit(parallel=True)
+def compute_forecast(dlms_container):
+
+    n_dlms = len(dlms_container)
+
+    forecasts = np.empty(n_dlms)
+    q_variances = np.empty(n_dlms)
+        
+    ##Predict state and forecast for each component dlm
+    #for i, dlm_model in enumerate(dlms_container):
+    for i in nb.prange(n_dlms):
+        
+        dlm_model = dlms_container[i]
+        a,R = dlm_model.predict_state()
+        f,Q = dlm_model.predict_observation(a,R,dlm_model.F)
+            
+        ##Save forecast
+        forecasts[i] = f
+        q_variances[i] = Q
+        
+    return forecasts, q_variances
+    
+    
+@nb.njit(parallel=True)
+def compute_update_state(y,dlms_container):
+
+    """
+    y - An array with a single scalar (for compatibility with numba-scipy)
+    """
+
+    ##Container for likelihoods of each DLM
+    n_dlms = len(dlms_container)
+    likelihoods = np.empty(n_dlms)
+                
+    for i in nb.prange(n_dlms):
+        
+        dlm_model = dlms_container[i]
+        a,R = dlm_model.predict_state()
+        f,Q = dlm_model.predict_observation(a,R,dlm_model.F)
+            
+        ##Update state of component model
+        dlm_model.update_state(y[0],dlm_model.F,a,R,f,Q)
+            
+        ##Compute likelihood of dlm
+        #likeli = st.t.pdf(y,df=dlm_model.n,loc=f, scale=Q)
+        #likeli = student_t_pdf(y[0],df=dlm_model.n,loc=f,scale=Q)
+        likeli = t_student.pdf(y,df=float(dlm_model.n),loc=f,scale=Q)[0]    ##Use of t function from numba_stats
+        #print(likeli)
+        ##Save likelihood
+        likelihoods[i] = likeli
+        
+    return likelihoods
+
+# Exemplo de uso
+#df = 10  # Graus de liberdade
+#mean = 2.0  # Parâmetro de localização (média)
+#scale = 1.5  # Parâmetro de escala (desvio padrão)
+#x = 3.0  # Valor para o qual você deseja calcular a PDF
+#pdf_value = student_t_pdf_custom(x, df, mean, scale)
+#print(f"A PDF da distribuição t de Student para x = {x}, df = {df}, mean = {mean}, scale = {scale} é {pdf_value:.4f}")
