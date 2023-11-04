@@ -9,7 +9,7 @@ Created on Sat Sep 19 16:11:47 2015
 import numpy as np
 from scipy.stats import norm, multivariate_normal, multivariate_t
 import scipy.stats as st
-from numba_stats import t as t_student
+#from numba_stats import t as t_student
 from scipy.linalg import block_diag, solve, LinAlgError
 import scipy.linalg as lin
 from numpy.linalg import slogdet
@@ -642,7 +642,7 @@ def multiprocess_dlm(Y, dlms):
     return probs
 
 
-@njit(parallel=True)
+@njit(fastmath=True)
 def multiprocess_matrixvariate_dlm(Y, dlms):
     
     """
@@ -661,25 +661,21 @@ def multiprocess_matrixvariate_dlm(Y, dlms):
     n = len(dlms)
     T = Y.shape[0]    ##Size of time series
     
-    probs = []
+    ##probs = []
+    probs = np.empty((T,n))
     
     ##Initialize prior probabilities of DLMs
     
     p = np.ones(n)/n
     
-    for t in range(T):    
+    for t in range(T):
         
-        ##Take current observation
+        ##Take current observation (Notice y is a vector)
         y = Y[t]
-        
-        ##Make y  a column vector   (so that the transpose operation can be used)
-        y = y.reshape(-1,1)
-        
-        ##likelihoods = []
         
         likelihoods = np.empty(n)
         
-        for i in prange(n):      ##Numba paralelized loop
+        for i in range(n):      ##Numba paralelized loop
         
             dlm_model = dlms[i]
             
@@ -693,13 +689,17 @@ def multiprocess_matrixvariate_dlm(Y, dlms):
             ##likeli = multivariate_t.pdf(x=y.squeeze(), loc=f.squeeze(), shape=Q*dlm_model.S, df = dlm_model.n)
                
             ##likeli = multivariate_t.pdf(x=y.squeeze(), loc=f.squeeze(), shape=Q*dlm_model.S, df = dlm_model.h)
-            likeli = multivariate_t_density(x=y, mu=f, Sigma=Q*dlm_model.S, df=dlm_model.h)
+            likeli = multivariate_t_density(x=y.flatten(), mu=f.flatten(), Sigma=Q*dlm_model.S, df=dlm_model.h)
             
             ##likelihoods.append(likeli)
             
             likelihoods[i] = likeli
             
-            dlm_model.update_state(y,a,R,f,Q)
+            #y = np.copy(y)  ##Make y contiguos
+            ##Make y  a column vector
+            #y = y.reshape(-1,1)
+      
+            dlm_model.update_state(np.copy(y).reshape(-1,1),a,R,f,Q)
             
         ##likelihoods = np.array(likelihoods)
         
@@ -728,9 +728,10 @@ def multiprocess_matrixvariate_dlm(Y, dlms):
         
         ##Renormalize
         p = p/re_norm_const
-        probs.append(p)
+        ##probs.append(p)
+        probs[t] = p
         
-    probs = np.array(probs)
+    ##probs = np.array(probs)
         
     return probs
 
@@ -853,6 +854,7 @@ def log_likelihood(Y,ff,QQ):
     return L
 
 
+@njit
 def log_likelihood_matrixvariate_DLM(Y,ff,QQ,DD,hh,D0,h0):
     
     """
@@ -875,7 +877,7 @@ def log_likelihood_matrixvariate_DLM(Y,ff,QQ,DD,hh,D0,h0):
         f = ff[t]
         Q = QQ[t]
         
-        f = f.squeeze()   ##Turn f into a (q,) shape array
+        #f = f.squeeze()   ##Turn f into a (q,) shape array
          
         if t == 0:
             D = D0    ##We neeed this since DD[0] is the D value at time t = 1, and we need the prior value of D at time t = 0 (this is, after the first update)
@@ -886,9 +888,11 @@ def log_likelihood_matrixvariate_DLM(Y,ff,QQ,DD,hh,D0,h0):
         
         ##Compute estimate of \Sigma covariance matrix (mean value of inverse Wishart distribution)
         S = D/h
-        
+ 
         ##Accumulate L
-        L += multivariate_t.logpdf(x=y, loc=f, shape=Q*S, df = h)
+        #L += multivariate_t.logpdf(x=y, loc=f.flatten(), shape=Q*S, df = h)
+        
+        L+= np.log(multivariate_t_density(x=y.flatten(), mu=f.flatten(), Sigma=Q*S, df=h))
             
         
     return L
@@ -1947,7 +1951,7 @@ class trend_matrixvariate_DLM:
     probability density.
     """
     
-    def __init__(self,m0,C0,D0,h0,V,delta=0.99,lambd=0.99):
+    def __init__(self,V,m0,C0,D0,h0,delta=0.99,lambd=0.99):
         
         """
         n: Size of parameter vectors (same size for each univariate DLM)
@@ -2076,16 +2080,25 @@ class trend_matrixvariate_DLM:
         """
         
         
-        mm = []   ##Save all estimates of systemic mean
-        CC = []   ##Save all estimates of the systemic variance
-        ff = []   ##Save all forecasts
-        QQ = []   ##Save all forecast variances
+        #mm = []   ##Save all estimates of systemic mean
+        ##CC = []   ##Save all estimates of the systemic variance
+        #ff = []   ##Save all forecasts
+        #QQ = []   ##Save all forecast variances
         ##SS = []   ##Save all covariance matrices
         ##nn = []   ##Save all degrees of freedom
-        DD = []   ##Save all scale matrices
-        hh = []   ##Save all degrees of freedom
+        #DD = []   ##Save all scale matrices
+        #hh = []   ##Save all degrees of freedom
+        
+        dim_1, dim_2 = self.m.shape   ##dim_1 is the size of the state vector. dim_2 is the size of the observation vector
            
         T = Y.shape[0]    ##Take total number of observations
+        
+        mm = np.empty((T, dim_1, dim_2))   ##Save all estimates of systemic mean
+        CC = np.empty((T, dim_1, dim_1))   ##Save all estimates of the systemic variance
+        ff = np.empty((T,dim_2,1))   ##Save all forecasts
+        QQ = np.empty((T,dim_2,1))   ##Save all forecast variances
+        DD = np.empty((T,dim_2, dim_2))   ##Save all scale matrices
+        hh = np.empty(T)   ##Save all degrees of freedom
         
         for t in range(T):
             
@@ -2097,19 +2110,32 @@ class trend_matrixvariate_DLM:
             y = Y[t]
             
             ##Make y  a column vector   (so that the transpose operation can be used)
-            y = y.reshape(-1,1)
+            ##y = y.reshape(-1,1)
+            
+            y = np.copy(y)  ##Make y contiguos
+            y = y.reshape(-1,1)    ##Make y  a column vector   (so that the transpose operation can be used)
             
             self.update_state(y,a,R,f,Q)
             
             ##Save statistics
-            mm.append(self.m)
-            CC.append(self.C)
-            ff.append(f)
-            QQ.append(Q)
-            DD.append(self.D)
-            hh.append(self.h)
+            ##mm.append(self.m)
+            ##CC.append(self.C)
+            ##ff.append(f)
+            ##QQ.append(Q)
+            ##DD.append(self.D)
+            ##hh.append(self.h)
             
-        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ),np.array(DD), np.array(hh)
+            ##Save statistics
+            
+            mm[t] = self.m
+            CC[t] = self.C
+            ff[t] = f
+            QQ[t] = Q
+            DD[t] = self.D
+            hh[t] = self.h
+            
+        #return np.array(mm), np.array(CC), np.array(ff), np.array(QQ),np.array(DD), np.array(hh)
+        return mm, CC, ff, QQ, DD, hh
     
     def restart_dlm(self):
         
@@ -2521,8 +2547,7 @@ def student_t_pdf(x, df, loc, scale):
     pdf = prefactor * (1 + (1 / df) * standardized_x ** 2) ** (-(df + 1) / 2)
     return pdf
     
-#@njit(parallel=True)
-@njit
+@njit(parallel=True)
 def compute_forecast(dlms_container):
 
     n_dlms = len(dlms_container)
@@ -2532,7 +2557,7 @@ def compute_forecast(dlms_container):
         
     ##Predict state and forecast for each component dlm
     #for i, dlm_model in enumerate(dlms_container):
-    for i in range(n_dlms):
+    for i in nb.prange(n_dlms):
         
         dlm_model = dlms_container[i]
         a,R = dlm_model.predict_state()
@@ -2545,19 +2570,18 @@ def compute_forecast(dlms_container):
     return forecasts, q_variances
     
     
-#@njit(parallel=True)
-@njit
+@njit(parallel=True)
 def compute_update_state(y,dlms_container):
 
     """
-    y - An array with a single scalar (for compatibility with numba-stats)
+    y - An array with a single scalar (for compatibility with numba-scipy)
     """
 
     ##Container for likelihoods of each DLM
     n_dlms = len(dlms_container)
     likelihoods = np.empty(n_dlms)
                 
-    for i in range(n_dlms):
+    for i in nb.prange(n_dlms):
         
         dlm_model = dlms_container[i]
         a,R = dlm_model.predict_state()
@@ -2575,6 +2599,8 @@ def compute_update_state(y,dlms_container):
         likelihoods[i] = likeli
         
     return likelihoods
+
+
 
 @njit
 def multivariate_t_density(x, mu, Sigma, df):
