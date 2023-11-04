@@ -9,12 +9,12 @@ Created on Sat Sep 19 16:11:47 2015
 import numpy as np
 from scipy.stats import norm, multivariate_normal, multivariate_t
 import scipy.stats as st
-#from scipy.stats import t as t_student
 from numba_stats import t as t_student
 from scipy.linalg import block_diag, solve, LinAlgError
 import scipy.linalg as lin
 from numpy.linalg import slogdet
 import numba as nb
+from numba import njit, prange
 from numba.typed import List
 from numba.types import ListType
 from numba.experimental import jitclass
@@ -642,6 +642,7 @@ def multiprocess_dlm(Y, dlms):
     return probs
 
 
+@njit(parallel=True)
 def multiprocess_matrixvariate_dlm(Y, dlms):
     
     """
@@ -658,6 +659,7 @@ def multiprocess_matrixvariate_dlm(Y, dlms):
     """
     
     n = len(dlms)
+    T = Y.shape[0]    ##Size of time series
     
     probs = []
     
@@ -665,7 +667,7 @@ def multiprocess_matrixvariate_dlm(Y, dlms):
     
     p = np.ones(n)/n
     
-    for t in range(Y.shape[0]):
+    for t in range(T):    
         
         ##Take current observation
         y = Y[t]
@@ -673,9 +675,13 @@ def multiprocess_matrixvariate_dlm(Y, dlms):
         ##Make y  a column vector   (so that the transpose operation can be used)
         y = y.reshape(-1,1)
         
-        likelihoods = []
+        ##likelihoods = []
         
-        for dlm_model in dlms:
+        likelihoods = np.empty(n)
+        
+        for i in prange(n):      ##Numba paralelized loop
+        
+            dlm_model = dlms[i]
             
             a,R = dlm_model.predict_state()
             
@@ -686,13 +692,16 @@ def multiprocess_matrixvariate_dlm(Y, dlms):
             ##Notice that we turn y and f f into a (q,) shape array (requirement of the multivariate_t pdf)
             ##likeli = multivariate_t.pdf(x=y.squeeze(), loc=f.squeeze(), shape=Q*dlm_model.S, df = dlm_model.n)
                
-            likeli = multivariate_t.pdf(x=y.squeeze(), loc=f.squeeze(), shape=Q*dlm_model.S, df = dlm_model.h)
+            ##likeli = multivariate_t.pdf(x=y.squeeze(), loc=f.squeeze(), shape=Q*dlm_model.S, df = dlm_model.h)
+            likeli = multivariate_t_density(x=y, mu=f, Sigma=Q*dlm_model.S, df=dlm_model.h)
             
-            likelihoods.append(likeli)
+            ##likelihoods.append(likeli)
+            
+            likelihoods[i] = likeli
             
             dlm_model.update_state(y,a,R,f,Q)
             
-        likelihoods = np.array(likelihoods)
+        ##likelihoods = np.array(likelihoods)
         
         ##norm_const = (likelihoods).sum()
         ##p = likelihoods/norm_const
@@ -1731,7 +1740,7 @@ class multivariate_dlm:
         self.m = self.m0    #
         self.C = self.C0
     
-
+    
 class matrixvariate_dlm:
     
     """
@@ -1746,7 +1755,7 @@ class matrixvariate_dlm:
     probability density.
     """
     
-    def __init__(self,G,F,V,m0,C0,D0,h0,delta=0.99,lambd=0.99, fix_sigma=False):
+    def __init__(self,G,F,V,m0,C0,D0,h0,delta=0.99,lambd=0.99):
         
         """
         n: Size of parameter vectors (same size for each univariate DLM)
@@ -1769,7 +1778,7 @@ class matrixvariate_dlm:
         self.C0 = C0
         self.D0 = D0
         self.h0 = h0
-        self.fix_sigma = fix_sigma
+        ##self.fix_sigma = fix_sigma
         
         ##Structural parameters
         self.G = G
@@ -1839,18 +1848,18 @@ class matrixvariate_dlm:
         
         
         ##Update parameters of Wishart distribution only if \Sigma is not fixed
-        if self.fix_sigma == False:
-            D = self.lambd*self.D+np.dot(e,e.T)/Q    ##Update scale matrix D_t of inverse Wishart distribution
-            h = new_h    ##Update degrees of freedom
+        #if self.fix_sigma == False:
+        D = self.lambd*self.D+np.dot(e,e.T)/Q    ##Update scale matrix D_t of inverse Wishart distribution
+        h = new_h    ##Update degrees of freedom
         
         ##Save new state values
         self.m = m
         self.C = C
         
-        if self.fix_sigma == False:
-            self.D = D
-            self.h = h
-            self.S = self.D/self.h
+        #if self.fix_sigma == False:
+        self.D = D
+        self.h = h
+        self.S = self.D/self.h
         
     def apply_DLM(self, Y):
         
@@ -1901,11 +1910,218 @@ class matrixvariate_dlm:
         ##Make running state equal to initial state
         self.m = self.m0
         self.C = self.C0
-        ##self.S = self.S0
-        ##self.n = self.n0
         self.D = self.D0
         self.h = self.h0
+
+
+spec_matrixvariate = [
+
+   ('m0', nb.float64[:,::1]),  ## "::1" Declare arrays as C arrays. Notice m0 is a matrix
+   ('C0', nb.float64[:,::1]),
+   ('D0', nb.float64[:,::1]),
+   ('h0', nb.float64),
+   ('m', nb.float64[:,::1]),
+   ('C', nb.float64[:,::1]),
+   ('D', nb.float64[:,::1]),
+   ('h', nb.float64),
+   ('S', nb.float64[:,::1]),
+   ('G', nb.float64[:,::1]),
+   ('F', nb.float64[:,::1]),
+   ('delta', nb.float64),
+   ('lambd', nb.float64),
+   ('V', nb.float64),
+]
+
+@jitclass(spec_matrixvariate)
+class trend_matrixvariate_DLM:
+    
+    """
+    Defines a matrix variate DLM. In this kind of DLM,
+    a q-dimensional multivariate vector y has
+    any of its components $y_j, j =1, ..., q$,
+    modeled as a univariate DLM with the same structure (same $F_t$ and $G_t$)
+    Each n-dimensional vector of parameters
+    $\theta_j, j =1, ... q$, is arranged as columns
+    of a n x q matriz $\Theta$. The n x q matrix $\Omega_t$
+    of evolution errors is assumed to follow a matrixnormal
+    probability density.
+    """
+    
+    def __init__(self,m0,C0,D0,h0,V,delta=0.99,lambd=0.99):
         
+        """
+        n: Size of parameter vectors (same size for each univariate DLM)
+        q: Size of observation vector (number of univariate DLMs)
+        
+        Prior parameters
+            m0 - Initial prior mean matrix of the state matrix \Omega_t
+            C0 - Initial prior covariance matrix of the state columns of state matrix \Omega_t
+            D0 - Initial prior scale matrix of Wishart distribution for the inverse covariance matrix \Sigma
+            h0 - Initial prior number of degrees of freedom in the Wishart distribution for the inverse covariance matrix \Sigma
+        Structure parameters
+            F - Regression vector of each univariate DLM (n x 1)
+            G - System matrix of each DLM   (n x n)
+            V - Constant observational variance of each univariate DLM (scalar)
+            d - Discount factor used in determining the a priori variance matrix R
+        """
+        
+        ##Mount G and F matrices
+        
+        ##Second order DLM (2 state parameters: mean level and trend)
+        nn = 2                     ##Dimension of state vector
+        
+        ##System matrix for the second order DLM (a Jordan matrix with order 2)
+        G = np.eye(nn)
+        G[0,1] = 1
+        
+
+        ##Regression vector for the second order DLM (observation is equals to the mean level)
+        F = np.zeros(nn)
+        F[0] = 1
+        
+        ##Save initial state of the DLM
+        self.m0 = m0
+        self.C0 = C0
+        self.D0 = D0
+        self.h0 = h0
+        ##self.fix_sigma = fix_sigma
+        
+        ##Structural parameters
+        self.G = G
+        self.F = F.reshape(-1,1)    ##Make F a column vector
+        self.delta = delta
+        self.lambd = lambd
+        self.V = V
+        
+        ##State variables, initialized as provided initial prior values
+        #(notice that this is the estimated state at any time. Actual state is latent and inacessible)
+        self.m = m0
+        self.C = C0
+        self.D = D0
+        self.h = h0
+        self.S = self.D/self.h
+        
+        #if fix_sigma == True:    ##Fix \Sigma covariance matrix
+        #    self.S = self.D/self.h
+        
+    def predict_state(self):
+        
+        """Generate the prior distribution of the state matrix at next time t"""
+               
+        ##Parameters of prior distribution at time t
+        ##(Prediction distribution of the state/parameters vectors)
+        a = np.dot(self.G, self.m)   ##Notice "a" is a n x q matrix
+        
+        ##Compute R matrix at time t (covariance matrix of prior distribution at time t)
+        
+        ##Compute P matrix (Covariance og r.v. G * \theta)
+        P = np.dot(self.G, np.dot(self.C, self.G.T))
+                
+        ##Update R matrix as P matrix inflated by the discount factor
+        R = 1/self.delta*P
+        
+        return a, R
+    
+    def predict_observation(self, a, R):
+        
+        ##One-step forecast distribution
+        F = self.F
+        f = np.dot(F.T, a)    ##F is a (n x 1) column vector. f is (1 x q) row vector
+        Q = np.dot(F.T, np.dot(R,F))+self.V ##Q is a scalar
+        
+        ##Make f a column vector
+        f = f.T
+        
+        return f,Q    ##    
+    
+    
+    def update_state(self,y,a,R,f,Q):
+        
+        ##Compute error term
+        e = y-f
+        
+        ##Adjustment factor (Kalman gain), A is a n x 1 vector
+        A = np.dot(R,self.F)/Q
+        
+        ##Posterior mean. Notice A is n x 1 and e.T is a 1 x q vector, so that m is n x q
+        m = a+np.dot(A, e.T)       
+        
+        ##Posterior covariance matrix between components of parameter vector
+        C = R - np.dot(A,A.T)*Q
+        
+        new_h = self.lambd*self.h+1
+        #new_n = self.d2*self.n+1
+        
+        
+        ##Update parameters of Wishart distribution only if \Sigma is not fixed
+        #if self.fix_sigma == False:
+        D = self.lambd*self.D+np.dot(e,e.T)/Q    ##Update scale matrix D_t of inverse Wishart distribution
+        h = new_h    ##Update degrees of freedom
+        
+        ##Save new state values
+        self.m = m
+        self.C = C
+        
+        #if self.fix_sigma == False:
+        self.D = D
+        self.h = h
+        self.S = self.D/self.h
+        
+    def apply_DLM(self, Y):
+        
+        """
+        Apply DLM to data Y.
+        
+        Y: 
+        """
+        
+        
+        mm = []   ##Save all estimates of systemic mean
+        CC = []   ##Save all estimates of the systemic variance
+        ff = []   ##Save all forecasts
+        QQ = []   ##Save all forecast variances
+        ##SS = []   ##Save all covariance matrices
+        ##nn = []   ##Save all degrees of freedom
+        DD = []   ##Save all scale matrices
+        hh = []   ##Save all degrees of freedom
+           
+        T = Y.shape[0]    ##Take total number of observations
+        
+        for t in range(T):
+            
+            a,R = self.predict_state()
+            
+            f,Q = self.predict_observation(a,R)
+            
+            ##Take current observation at time t
+            y = Y[t]
+            
+            ##Make y  a column vector   (so that the transpose operation can be used)
+            y = y.reshape(-1,1)
+            
+            self.update_state(y,a,R,f,Q)
+            
+            ##Save statistics
+            mm.append(self.m)
+            CC.append(self.C)
+            ff.append(f)
+            QQ.append(Q)
+            DD.append(self.D)
+            hh.append(self.h)
+            
+        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ),np.array(DD), np.array(hh)
+    
+    def restart_dlm(self):
+        
+        ##Make running state equal to initial state
+        self.m = self.m0
+        self.C = self.C0
+        self.D = self.D0
+        self.h = self.h0
+
+
+
+
 class random_walk_DLM(multivariate_dlm):
        
     def __init__(self,m0,C0,V,d=0.99):
@@ -1936,8 +2152,8 @@ class random_walk_DLM(multivariate_dlm):
         ##Initializes parent DLM
         multivariate_dlm.__init__(self,G,F,m0,C0,V,d)
 
-    
-class trend_matrixvariate_DLM(matrixvariate_dlm):
+
+class trend_matrixvariate_DLM__no_numba(matrixvariate_dlm):
        
     def __init__(self,V,m0,C0,D0,h0,delta=0.99,lambd=0.99,fix_sigma=False):
         
@@ -2259,7 +2475,7 @@ class mixture_Fourier_DLM:
         return probs, mixture_forecasts_all_t
         
         
-@nb.njit
+@njit
 def matriz_bloco_diagonal(matrizes):
     if len(matrizes) == 0:
         raise ValueError("A lista de matrizes não pode estar vazia")
@@ -2286,7 +2502,7 @@ def matriz_bloco_diagonal(matrizes):
     return matriz_bloco
     
     
-@nb.njit
+@njit
 def student_t_pdf(x, df, loc, scale):
     """
     Calcula a função densidade de probabilidade da distribuição t de Student com parâmetros de localização e escala.
@@ -2305,7 +2521,8 @@ def student_t_pdf(x, df, loc, scale):
     pdf = prefactor * (1 + (1 / df) * standardized_x ** 2) ** (-(df + 1) / 2)
     return pdf
     
-@nb.njit(parallel=True)
+#@njit(parallel=True)
+@njit
 def compute_forecast(dlms_container):
 
     n_dlms = len(dlms_container)
@@ -2315,7 +2532,7 @@ def compute_forecast(dlms_container):
         
     ##Predict state and forecast for each component dlm
     #for i, dlm_model in enumerate(dlms_container):
-    for i in nb.prange(n_dlms):
+    for i in range(n_dlms):
         
         dlm_model = dlms_container[i]
         a,R = dlm_model.predict_state()
@@ -2328,18 +2545,19 @@ def compute_forecast(dlms_container):
     return forecasts, q_variances
     
     
-@nb.njit(parallel=True)
+#@njit(parallel=True)
+@njit
 def compute_update_state(y,dlms_container):
 
     """
-    y - An array with a single scalar (for compatibility with numba-scipy)
+    y - An array with a single scalar (for compatibility with numba-stats)
     """
 
     ##Container for likelihoods of each DLM
     n_dlms = len(dlms_container)
     likelihoods = np.empty(n_dlms)
                 
-    for i in nb.prange(n_dlms):
+    for i in range(n_dlms):
         
         dlm_model = dlms_container[i]
         a,R = dlm_model.predict_state()
@@ -2358,10 +2576,16 @@ def compute_update_state(y,dlms_container):
         
     return likelihoods
 
-# Exemplo de uso
-#df = 10  # Graus de liberdade
-#mean = 2.0  # Parâmetro de localização (média)
-#scale = 1.5  # Parâmetro de escala (desvio padrão)
-#x = 3.0  # Valor para o qual você deseja calcular a PDF
-#pdf_value = student_t_pdf_custom(x, df, mean, scale)
-#print(f"A PDF da distribuição t de Student para x = {x}, df = {df}, mean = {mean}, scale = {scale} é {pdf_value:.4f}")
+@njit
+def multivariate_t_density(x, mu, Sigma, df):
+
+    k = len(x)
+    numerator = gamma((df + k) / 2)
+    
+    denominator = gamma(df / 2) * ((df * np.pi) ** (k/2)) * np.linalg.det(Sigma) ** 0.5 
+    
+    kernel = (1 + (1 / df) * np.dot(np.dot((x - mu), np.linalg.inv(Sigma)), (x - mu))) ** ((-(df + k)) / 2)
+    
+    density = numerator / denominator*kernel
+    
+    return density
