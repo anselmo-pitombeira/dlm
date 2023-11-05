@@ -9,7 +9,7 @@ Created on Sat Sep 19 16:11:47 2015
 import numpy as np
 from scipy.stats import norm, multivariate_normal, multivariate_t
 import scipy.stats as st
-#from numba_stats import t as t_student
+from numba_stats import t as t_student
 from scipy.linalg import block_diag, solve, LinAlgError
 import scipy.linalg as lin
 from numpy.linalg import slogdet
@@ -1358,7 +1358,20 @@ class dynamic_harmonic_dlm:
         return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
         
     
-    
+spec_tvar = [
+
+("m", nb.float64[::1]),
+("C", nb.float64[:,::1]),
+("n", nb.int64),
+("p", nb.int64),
+("S", nb.float64),
+("d1", nb.float64),
+("F", nb.float64[::1]),   ##Declares array as C contiguos
+("G", nb.float64[:,::1]),   ##Declares array as C contiguos
+
+]
+
+@jitclass(spec_tvar)
 class tvar_dlm:
     
     """
@@ -1387,7 +1400,7 @@ class tvar_dlm:
         self.p = p
         self.S = S0
         self.d1 = d1
-        self.F = F0
+        self.F = F0    ##Regression vector at each time t (this changes dynamically over time)
         
         ##SYSTEM MATRIX IS JUST AN p x p IDENTITY MATRIX
         G = np.eye(p)
@@ -1449,16 +1462,20 @@ class tvar_dlm:
         self.F = new_F
         
         
-    def apply_DLM(self, Y):
+    def apply(self, Y):
+    
+        dim_1 = self.m.shape[0]   ##dim_1 is the size of the state vector
+        T = Y.shape[0]    ##Take total number of observations
+        
+        mm = np.empty((T, dim_1))   ##Save all estimates of systemic mean
+        CC = np.empty((T, dim_1, dim_1))   ##Save all estimates of the systemic variance
+        ff = np.empty(T)   ##Save all forecasts
+        SS = np.empty(T)   ##Save all estimates of the observation variance
+        QQ = np.empty(T)   ##Save all forecast variances
         
         
-        mm = []   ##Save all estimates of systemic mean
-        CC = []   ##Save all estimates of the systemic variance
-        SS = []   ##Save all estimates of the observation variance
-        ff = []   ##Save all forecasts
-        QQ = []   ##Save all forecast variances
         
-        for t in range(Y.size):
+        for t in range(T):
             
             a,R = self.predict_state()
             
@@ -1471,13 +1488,14 @@ class tvar_dlm:
             
             
             ##Save statistics
-            mm.append(self.m)
-            CC.append(self.C)
-            ff.append(f)
-            QQ.append(Q)
-            SS.append(self.S)
             
-        return np.array(mm), np.array(CC), np.array(ff), np.array(QQ), np.array(SS)
+            mm[t] = self.m
+            CC[t] = self.C
+            ff[t] = f
+            QQ[t] = Q
+            SS[t] = self.S
+            
+        return mm, CC, ff, QQ, SS
     
     
 class latent_AR_dlm:
@@ -2547,7 +2565,8 @@ def student_t_pdf(x, df, loc, scale):
     pdf = prefactor * (1 + (1 / df) * standardized_x ** 2) ** (-(df + 1) / 2)
     return pdf
     
-@njit(parallel=True)
+##@njit(parallel=True)
+@njit
 def compute_forecast(dlms_container):
 
     n_dlms = len(dlms_container)
@@ -2557,7 +2576,8 @@ def compute_forecast(dlms_container):
         
     ##Predict state and forecast for each component dlm
     #for i, dlm_model in enumerate(dlms_container):
-    for i in nb.prange(n_dlms):
+    ##for i in nb.prange(n_dlms):
+    for i in range(n_dlms):
         
         dlm_model = dlms_container[i]
         a,R = dlm_model.predict_state()
@@ -2570,7 +2590,8 @@ def compute_forecast(dlms_container):
     return forecasts, q_variances
     
     
-@njit(parallel=True)
+#@njit(parallel=True)
+@njit
 def compute_update_state(y,dlms_container):
 
     """
@@ -2581,7 +2602,8 @@ def compute_update_state(y,dlms_container):
     n_dlms = len(dlms_container)
     likelihoods = np.empty(n_dlms)
                 
-    for i in nb.prange(n_dlms):
+    ##for i in nb.prange(n_dlms):
+    for i in range(n_dlms):
         
         dlm_model = dlms_container[i]
         a,R = dlm_model.predict_state()
