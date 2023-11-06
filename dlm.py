@@ -2287,12 +2287,12 @@ class trend_DLM(multivariate_dlm):
 #    ('p', nb.float64[:])
 #]
 
-spec2 = [
+#spec2 = [
 
-    ('Ts', nb.float64[::1]), ## "::1" Declare arrays as C arrays
-    ('dlms', ListType(Fourier_dlm.class_type.instance_type)),
-    ('p', nb.float64[::1])    ## "::1" Declare arrays as C arrays
-]
+#    ('Ts', nb.float64[::1]), ## "::1" Declare arrays as C arrays
+#    ('dlms', ListType(Fourier_dlm.class_type.instance_type)),
+#    ('p', nb.float64[::1])    ## "::1" Declare arrays as C arrays
+#]
 
 #@jitclass(spec2)
 class mixture_Fourier_DLM:
@@ -2373,8 +2373,8 @@ class mixture_Fourier_DLM:
         
             
         ##Compute mixed forecast and variances
-        mix_forecast = np.dot(forecasts, self.p)
-        mix_variance = np.dot(q_variances, self.p)
+        mix_forecast = np.dot(forecasts, self.p)    ##This is a scalar
+        mix_variance = np.dot(q_variances+(forecasts-mix_forecast)**2, self.p)    ##Variance of mixture distribution
         
         return mix_forecast, mix_variance
         
